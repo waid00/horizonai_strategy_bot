@@ -49,31 +49,50 @@ export async function GET() {
   };
   if (!report.env.ok) overallOk = false;
 
-  // ── 2. Supabase: documents table row count ────────────────────────────────
+  // ── 2. Supabase: documents table row count + embedding coverage ──────────
   if (supabaseUrl && serviceRoleKey) {
     try {
       const supabase = createClient(supabaseUrl, serviceRoleKey);
-      const { count, error } = await supabase
+
+      // Total row count
+      const { count: totalCount, error: countError } = await supabase
         .from("documents")
         .select("*", { count: "exact", head: true });
 
-      if (error) {
+      if (countError) {
         report.documents_table = {
           ok: false,
-          error: error.message,
+          error: countError.message,
           hint: "The documents table may not exist. Run supabase/schema.sql in the Supabase SQL Editor.",
         };
         overallOk = false;
       } else {
-        const rows = count ?? 0;
+        const rows = totalCount ?? 0;
+
+        // Count rows where embedding IS NULL – these won't be matched by the RPC
+        const { count: nullEmbeddingCount } = await supabase
+          .from("documents")
+          .select("*", { count: "exact", head: true })
+          .is("embedding", null);
+
+        const embeddedRows = rows - (nullEmbeddingCount ?? 0);
+        const allEmbedded = (nullEmbeddingCount ?? 0) === 0;
+
+        let hint: string | undefined;
+        if (rows === 0) {
+          hint = "Table exists but is empty – run: npm run ingest";
+        } else if (!allEmbedded) {
+          hint = `${nullEmbeddingCount} row(s) have NULL embeddings and are excluded from vector search. Run 'npm run ingest' to generate embeddings for all rows.`;
+        }
+
         report.documents_table = {
-          ok: rows > 0,
+          ok: rows > 0 && allEmbedded,
           rows,
-          hint: rows === 0
-            ? "Table exists but is empty – run: npm run ingest"
-            : undefined,
+          rows_with_embedding: embeddedRows,
+          rows_missing_embedding: nullEmbeddingCount ?? 0,
+          hint,
         };
-        if (rows === 0) overallOk = false;
+        if (rows === 0 || !allEmbedded) overallOk = false;
       }
     } catch (err) {
       report.documents_table = { ok: false, error: String(err) };
