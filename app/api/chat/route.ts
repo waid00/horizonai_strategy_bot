@@ -12,6 +12,7 @@
 
 import { createClient } from "@supabase/supabase-js";
 import { streamText } from "ai";
+import { openai } from "@ai-sdk/openai";
 import OpenAI from "openai";
 import { NextRequest } from "next/server";
 
@@ -40,9 +41,38 @@ interface MatchedDocument {
 }
 
 interface ChatRequestBody {
-  messages: Array<{ role: "user" | "assistant"; content: string }>;
+  messages: Array<{
+    role: "user" | "assistant" | "system";
+    content?: string;
+    parts?: Array<{ type: string; text?: string }>;
+  }>;
   mode?: "chat" | "gap-analysis"; // default: chat
   externalText?: string;          // only used in gap-analysis mode
+}
+
+function extractMessageText(message: ChatRequestBody["messages"][number]): string {
+  if (typeof message.content === "string") return message.content;
+  if (!message.parts || message.parts.length === 0) return "";
+
+  return message.parts
+    .filter((part) => part.type === "text" && typeof part.text === "string")
+    .map((part) => part.text as string)
+    .join("\n");
+}
+
+function toModelMessages(messages: ChatRequestBody["messages"]) {
+  return messages
+    .map((message) => {
+      const role = message.role === "system" ? "user" : message.role;
+      return {
+        role,
+        content: extractMessageText(message),
+      };
+    })
+    .filter((message) => message.content.trim().length > 0) as Array<{
+      role: "user" | "assistant";
+      content: string;
+    }>;
 }
 
 // ─── Vector Search ────────────────────────────────────────────────────────────
@@ -74,10 +104,26 @@ async function retrieveContext(
   });
 
   if (error) {
-    throw new Error(`Supabase RPC error: ${error.message}`);
+    throw new Error(`Supabase RPC error at threshold ${matchThreshold}: ${error.message}`);
   }
 
   return (data as MatchedDocument[]) ?? [];
+}
+
+async function retrieveContextWithFallback(query: string): Promise<MatchedDocument[]> {
+  // Progressive thresholds improve resilience to typos and short queries.
+  const thresholdPlan = [0.35, 0.25, 0.15, 0.0];
+
+  for (const threshold of thresholdPlan) {
+    console.log(`[RAG] retrieval attempt threshold=${threshold.toFixed(2)}`);
+    const chunks = await retrieveContext(query, threshold, 8);
+    console.log(`[RAG] retrieval result threshold=${threshold.toFixed(2)} chunks=${chunks.length}`);
+    if (chunks.length > 0) {
+      return chunks;
+    }
+  }
+
+  return [];
 }
 
 // ─── Prompt Construction ──────────────────────────────────────────────────────
@@ -148,6 +194,17 @@ ${contextBlock}`;
 
 export async function POST(req: NextRequest) {
   try {
+    const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
+    if (!serviceRoleKey) {
+      throw new Error("Missing SUPABASE_SERVICE_ROLE_KEY");
+    }
+
+    if (serviceRoleKey.startsWith("sb_publishable_")) {
+      throw new Error(
+        "SUPABASE_SERVICE_ROLE_KEY is using a publishable key. Replace it with the actual service_role secret key from Supabase Dashboard."
+      );
+    }
+
     const body: ChatRequestBody = await req.json();
     const { messages, mode = "chat", externalText } = body;
 
@@ -158,8 +215,17 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    const modelMessages = toModelMessages(messages);
+    if (modelMessages.length === 0) {
+      return new Response(JSON.stringify({ error: "at least one text message is required" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
     // The query for vector search is the last user message (+ external text for gap-analysis)
-    const lastUserMessage = messages[messages.length - 1]?.content ?? "";
+    const lastUserMessage =
+      [...modelMessages].reverse().find((message) => message.role === "user")?.content ?? "";
     const searchQuery =
       mode === "gap-analysis" && externalText
         ? `${lastUserMessage}\n\n${externalText}`
@@ -168,9 +234,9 @@ export async function POST(req: NextRequest) {
     // ── Step 1: Semantic retrieval ─────────────────────────────────────────
     let retrievedChunks: MatchedDocument[] = [];
     try {
-      retrievedChunks = await retrieveContext(searchQuery);
+      retrievedChunks = await retrieveContextWithFallback(searchQuery);
     } catch (retrievalError) {
-      console.error("Retrieval error:", retrievalError);
+      console.error("Retrieval error (all thresholds failed):", retrievalError);
       // Fail gracefully – model will use NO_CONTEXT_AVAILABLE guard
     }
 
@@ -181,17 +247,17 @@ export async function POST(req: NextRequest) {
     const augmentedMessages =
       mode === "gap-analysis" && externalText
         ? [
-            ...messages.slice(0, -1),
+            ...modelMessages.slice(0, -1),
             {
               role: "user" as const,
               content: `${lastUserMessage}\n\nEXTERNAL TEXT FOR GAP ANALYSIS:\n${externalText}`,
             },
           ]
-        : messages;
+        : modelMessages;
 
     // ── Step 3: Stream from OpenAI gpt-4o via Vercel AI SDK ───────────────
     const result = streamText({
-      model: "gpt-4o",
+      model: openai("gpt-4o"),
       system: systemPrompt,
       messages: augmentedMessages,
       temperature: 0,          // deterministic – no creative variance in analytical output

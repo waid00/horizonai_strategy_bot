@@ -20,15 +20,37 @@ type Mode = "chat" | "gap-analysis";
 export default function HorizonBotPage() {
   const [mode, setMode] = useState<Mode>("chat");
   const [externalText, setExternalText] = useState("");
+  const [input, setInput] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Vercel AI SDK useChat: manages messages, input, and streaming state
-  const { messages, input, handleInputChange, handleSubmit, isLoading, error } =
-    useChat({
-      api: "/api/chat",
-      // Inject mode and externalText into every request body
-      body: { mode, externalText: mode === "gap-analysis" ? externalText : undefined },
-    });
+  const { messages, sendMessage, status, error } = useChat();
+
+  const isLoading = status === "submitted" || status === "streaming";
+
+  function getMessageText(
+    msg: { parts?: Array<{ type?: string; text?: string }> }
+  ): string {
+    if (!msg.parts || msg.parts.length === 0) return "";
+    return msg.parts
+      .filter((p) => p?.type === "text" && typeof p.text === "string")
+      .map((p) => p.text as string)
+      .join("\n");
+  }
+
+  async function handleFormSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const text = input.trim();
+    if (!text || isLoading) return;
+
+    await sendMessage(
+      { text },
+      {
+        body: { mode, externalText: mode === "gap-analysis" ? externalText : undefined },
+      }
+    );
+    setInput("");
+  }
 
   // Auto-scroll to bottom on new message
   useEffect(() => {
@@ -108,11 +130,7 @@ export default function HorizonBotPage() {
                       key={q}
                       className="pill"
                       onClick={() => {
-                        // Inject example question into input
-                        const syntheticEvent = {
-                          target: { value: q },
-                        } as React.ChangeEvent<HTMLInputElement>;
-                        handleInputChange(syntheticEvent);
+                        setInput(q);
                       }}
                     >
                       {q}
@@ -133,7 +151,7 @@ export default function HorizonBotPage() {
                   </span>
                   <div className="message-content">
                     <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                      {msg.content}
+                      {getMessageText(msg)}
                     </ReactMarkdown>
                   </div>
                 </div>
@@ -163,11 +181,11 @@ export default function HorizonBotPage() {
           </div>
 
           {/* Input Area */}
-          <form className="input-form" onSubmit={handleSubmit}>
+          <form className="input-form" onSubmit={handleFormSubmit}>
             <input
               className="chat-input"
               value={input}
-              onChange={handleInputChange}
+              onChange={(e) => setInput(e.target.value)}
               placeholder={
                 mode === "gap-analysis"
                   ? "Ask what gaps exist between the external text and Horizon Bank strategy…"

@@ -1,190 +1,317 @@
 #!/usr/bin/env node
 /**
  * Horizon Bank Strategy Bot – Data Ingestion Pipeline
- * Phase 2: Load documents → generate embeddings → upsert into Supabase
+ * Source documents:
+ *   - Hlavní_KPI.docx         (KPI definitions, current & target states)
+ *   - Copy_of_KPIs.pdf        (KPI overview)
+ *   - Strategický_rámec_banky (Strategic framework, vision, segments, competition)
+ *   - Mapovani_regulaci_Tym6  (Regulatory mapping, data products)
  *
- * Usage:
- *   npm install @supabase/supabase-js openai dotenv
- *   node ingest.mjs
- *
- * Environment variables (copy from .env.local):
- *   SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, OPENAI_API_KEY
+ * Usage: npm run ingest
  */
 
 import { createClient } from "@supabase/supabase-js";
 import OpenAI from "openai";
-import "dotenv/config";
+import dotenv from "dotenv";
+dotenv.config({ path: ".env.local" });
 
-// ─── Clients ────────────────────────────────────────────────────────────────
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY // service role bypasses RLS
+  process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// ─── Mock Horizon Bank Knowledge Base ───────────────────────────────────────
-// Replace with real document loading (PDF, DOCX, etc.) in production.
-// Each entry maps to one or more vector chunks.
+// ─── YOUR REAL DOCUMENTS ────────────────────────────────────────────────────
 
 const HORIZON_BANK_DOCUMENTS = [
-  // ── Digital Transformation ───────────────────────────────────────────────
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // SOURCE: Hlavní_KPI.docx + Copy_of_KPIs.pdf
+  // ══════════════════════════════════════════════════════════════════════════
+
   {
-    content: `Horizon Bank Digital Transformation Strategy 2024-2027:
-Horizon Bank targets a full cloud-native migration of its core banking platform by Q4 2025.
-The architecture adopts a microservices pattern built on AWS with Kubernetes orchestration.
-APIs are exposed via an internal developer portal (Kong Gateway) to enable composable banking.
-Legacy COBOL mainframe workloads are being containerised using AWS Blu Age before migration.
-Target state: 90% of transaction processing on cloud-native systems by end of 2026.`,
-    metadata: { domain: "Digital Transformation", source: "Strategy 2024-2027", tags: ["cloud", "microservices", "migration"] },
-  },
-  {
-    content: `Horizon Bank Mobile Banking Roadmap:
-Current mobile app (iOS/Android) has a 3.8/5 App Store rating and 2.1M monthly active users.
-Target for 2025: biometric-first authentication (FIDO2), personalised AI nudges, and
-real-time payment notifications. A super-app strategy consolidates investments, lending,
-and insurance into one shell application. Tech stack: React Native + GraphQL BFF.
-Feature velocity KPI: 2 releases per sprint (bi-weekly cadence).`,
-    metadata: { domain: "Digital Transformation", source: "Mobile Roadmap 2025", tags: ["mobile", "app", "biometric"] },
+    content: `Horizon Bank – North Star KPI: NPS (Net Promoter Score)
+Definice: Metrika spokojenosti klientů, která měří, jak pravděpodobně by klient doporučil banku svým známým. Hodnocení se získává z klientského průzkumu po interakci nebo pravidelně v aplikaci.
+Formát: průměrné hodnocení na škále 1–10.
+Počáteční stav: 6,5
+Cílový stav: 8,5
+Strategický cíl: Být mezi 4 lídry spokojenosti v bankovním sektoru (Air Bank, Raiffeisenbank, Fio Banka, Česká spořitelna) dle průzkumu KPMG 2025.
+Proč je důležité: NPS měří spokojenost a důvěru klientů, což je klíčové pro ambici být nejdůvěryhodnější bankou a podporovat dlouhodobý růst.`,
+    metadata: { domain: "KPI", source: "Hlavní KPI", tags: ["NPS", "north-star", "spokojenost"] },
   },
 
-  // ── Risk & Compliance ────────────────────────────────────────────────────
   {
-    content: `Horizon Bank Enterprise Risk Framework (ERF) v3.1:
-Risk appetite is formally governed by the Board Risk Committee (BRC) meeting quarterly.
-Three lines of defence model: (1) Business units own and manage risk; (2) Risk & Compliance
-provides oversight; (3) Internal Audit provides independent assurance.
-Key risk indicators (KRIs) are tracked in a proprietary GRC platform (ServiceNow IRM).
-Operational risk losses in 2023 totalled CZK 42M, below the CZK 80M risk appetite ceiling.`,
-    metadata: { domain: "Risk & Compliance", source: "ERF v3.1", tags: ["risk", "governance", "BRC"] },
-  },
-  {
-    content: `Horizon Bank Regulatory Compliance Posture – EU Landscape:
-Horizon Bank complies with DORA (Digital Operational Resilience Act) effective Jan 2025.
-ICT third-party risk register covers 210 critical vendors. Annual penetration testing
-is mandated for all internet-facing systems. GDPR DPA reports are filed with the Czech ÚOOÚ.
-Basel IV capital requirements are being absorbed with a CET1 ratio of 14.2% as of Q3 2024.
-PSD2 Strong Customer Authentication (SCA) is enforced on all transactions above €30.`,
-    metadata: { domain: "Risk & Compliance", source: "Regulatory Report Q3 2024", tags: ["DORA", "GDPR", "Basel IV", "PSD2"] },
+    content: `Horizon Bank – North Star KPI: Active Digital Clients
+Definice: Podíl klientů, kteří jsou aktivní v digitálním bankovnictví – přihlásí se do aplikace alespoň 5× měsíčně a alespoň 80 % jejich požadavků vyřeší online.
+Formát: (aktivní digitální klienti / celkový počet klientů) × 100 %
+Počáteční stav: 55 %
+Cílový stav: 80 %
+Strategický cíl: Aspoň 80 % active digital clients.
+Proč je důležité: Vysoký podíl digitálně aktivních klientů je nezbytný pro škálování personalizace, využití AI a snižování provozních nákladů.`,
+    metadata: { domain: "KPI", source: "Hlavní KPI", tags: ["digital", "aktivní klienti", "north-star"] },
   },
 
-  // ── Data & AI Strategy ───────────────────────────────────────────────────
   {
-    content: `Horizon Bank Data Strategy 2024:
-A unified data mesh architecture is being adopted. Domain teams own their data products
-and publish them to a central data marketplace (built on Databricks Unity Catalog).
-Real-time streaming pipelines use Apache Kafka with schema registry (Confluent Cloud).
-Master Data Management (MDM) for customer entities is handled by Informatica MDM.
-Data quality SLAs: >98% completeness and >99.5% accuracy for Tier-1 customer data.`,
-    metadata: { domain: "Data & AI", source: "Data Strategy 2024", tags: ["data mesh", "kafka", "Databricks"] },
-  },
-  {
-    content: `Horizon Bank AI/ML Adoption Strategy:
-Current production ML models: credit scoring (XGBoost, Gini 0.74), fraud detection
-(gradient boosting ensemble, F1 0.91), and customer churn prediction (LightGBM).
-MLOps platform: MLflow on Databricks with automated retraining triggers based on
-data drift thresholds (PSI > 0.25). Model governance requires approval from the
-AI Ethics Committee before production deployment. Target: 15 new AI use cases by 2026.`,
-    metadata: { domain: "Data & AI", source: "AI Adoption Strategy", tags: ["ML", "MLOps", "fraud", "credit scoring"] },
+    content: `Horizon Bank – North Star KPI: Revenue (Výnosy)
+Definice: Celkové výnosy banky generované z úroků, poplatků a provizí.
+Formát: celkové výnosy (Kč / rok)
+Počáteční stav: 2,5 mld. Kč
+Cílový stav: 7 mld. Kč ročně za 2 roky, zvyšovat každý rok aspoň o 50 %.
+Proč je důležité: Revenue ukazuje schopnost banky efektivně monetizovat klientskou bázi a financovat další růst a inovace.`,
+    metadata: { domain: "KPI", source: "Hlavní KPI", tags: ["revenue", "výnosy", "north-star"] },
   },
 
-  // ── Customer Experience ───────────────────────────────────────────────────
   {
-    content: `Horizon Bank Customer Experience (CX) Transformation:
-Net Promoter Score (NPS) is 42 as of Q3 2024 (industry benchmark: 38).
-Target NPS of 55 by 2026 driven by hyper-personalisation and omni-channel consistency.
-CX stack: Salesforce CRM + Salesforce Marketing Cloud + custom CDP (Customer Data Platform).
-Customer 360 view integrates transaction history, service interactions, and product holdings.
-Self-service resolution rate target: 80% by end of 2025 (currently 61%).`,
-    metadata: { domain: "Customer Experience", source: "CX Transformation Plan", tags: ["NPS", "CRM", "CDP", "personalisation"] },
-  },
-  {
-    content: `Horizon Bank Branch Network Optimisation:
-Branch count reduced from 180 to 140 between 2020-2024 as digital adoption rose to 78%.
-Remaining branches are being converted to advice-led hubs (no cash handling).
-Video banking kiosks will be deployed in 30 high-footfall locations by Q2 2025.
-Branch staff are being reskilled as financial advisors (minimum Cert IV Finance qualification).
-Target: 15% reduction in branch operating costs while maintaining customer satisfaction.`,
-    metadata: { domain: "Customer Experience", source: "Branch Optimisation Strategy", tags: ["branch", "digital", "reskilling"] },
+    content: `Horizon Bank – North Star KPI: Cost-to-Income
+Definice: Poměr provozních nákladů banky k jejím výnosům. Měří provozní efektivitu banky.
+Formát: (provozní náklady / výnosy) × 100 %
+Počáteční stav: 50 %
+Cílový stav: 30 %
+Proč je důležité: Cost-to-Income měří provozní efektivitu banky a její schopnost dlouhodobě růst udržitelným způsobem.`,
+    metadata: { domain: "KPI", source: "Hlavní KPI", tags: ["cost-to-income", "efektivita", "north-star"] },
   },
 
-  // ── Technology Architecture ───────────────────────────────────────────────
   {
-    content: `Horizon Bank Target Architecture Blueprint:
-Core banking system: migration from Temenos T24 (on-prem) to Thought Machine Vault (SaaS).
-Integration layer: event-driven architecture using Apache Kafka + AsyncAPI contracts.
-Security: Zero Trust Architecture (ZTA) with Zscaler ZTNA replacing legacy VPN.
-Observability stack: OpenTelemetry → Grafana + Tempo + Loki. SLO target: 99.95% availability.
-Infrastructure-as-Code: Terraform with Atlantis for PR-based plan/apply workflows.`,
-    metadata: { domain: "Technology", source: "Target Architecture Blueprint", tags: ["Vault", "Kafka", "ZTA", "Terraform"] },
-  },
-  {
-    content: `Horizon Bank API Strategy:
-API-first mandate adopted in 2023. All new capabilities must be API-exposed before UI.
-Internal APIs: REST + OpenAPI 3.1 specs stored in Backstage developer portal.
-Partner APIs: GraphQL federation gateway exposing account, payment, and product APIs.
-Open Banking compliance: CMA9-equivalent API standards adopted voluntarily.
-API versioning policy: minimum 12-month deprecation notice; sunset header enforced by Kong.`,
-    metadata: { domain: "Technology", source: "API Strategy 2023", tags: ["API", "GraphQL", "OpenAPI", "Open Banking"] },
+    content: `Horizon Bank – Podpůrné KPI: Počet nových klientů
+Definice: Počet nových klientů, kteří si v daném období založí účet nebo navážou nový obchodní vztah s bankou. KPI měří schopnost banky získávat nové klienty a rozšiřovat klientskou bázi.
+Formát: počet klientů / rok
+Počáteční stav: 10 000 klientů ročně
+Cílový stav: 100 000 klientů ročně`,
+    metadata: { domain: "KPI", source: "Podpůrné KPI", tags: ["akvizice", "noví klienti"] },
   },
 
-  // ── Sustainability ────────────────────────────────────────────────────────
   {
-    content: `Horizon Bank ESG and Sustainability Strategy:
-Net-zero commitment for Scope 1 and 2 emissions by 2030; Scope 3 by 2040.
-Green finance portfolio target: CZK 15B in sustainable loans/bonds by 2027.
-Data centre PUE (Power Usage Effectiveness) target: <1.3 (currently 1.51).
-ESG data reporting follows GRI Standards and TCFD recommendations.
-Internal carbon price set at €45/tonne CO2e for investment decision-making.`,
-    metadata: { domain: "Sustainability", source: "ESG Strategy 2024", tags: ["ESG", "net-zero", "green finance", "TCFD"] },
+    content: `Horizon Bank – Podpůrné KPI: Automation Resolution Rate
+Definice: Podíl klientských požadavků vyřešených automatizovaně (digitální kanály, chatbot, self-service) bez zásahu bankéře.
+Formát: (automaticky vyřešené požadavky / celkové požadavky) × 100 %
+Počáteční stav: 40 %
+Cílový stav: 80 %
+
+Podpůrné KPI: Digital Onboarding Conversion Rate
+Definice: Podíl klientů, kteří dokončí digitální onboarding proces po jeho zahájení. KPI ukazuje efektivitu digitální akviziční cesty.
+Formát: (dokončené onboardingy / zahájené onboardingy) × 100 %
+Počáteční stav: 35 %
+Cílový stav: 60 %`,
+    metadata: { domain: "KPI", source: "Podpůrné KPI", tags: ["automatizace", "onboarding", "digital"] },
   },
 
-  // ── Human Capital ─────────────────────────────────────────────────────────
   {
-    content: `Horizon Bank Workforce & Talent Strategy:
-Total headcount: 4,200 FTE as of 2024. Target: 3,800 FTE by 2027 through attrition and automation.
-Digital talent gap: 320 open technology roles (cloud engineers, data scientists, security).
-Partnerships with CTU Prague and Masaryk University for graduate talent pipeline.
-Internal reskilling: 1,200 employees enrolled in Digital Academy (Python, cloud, data literacy).
-Employee NPS (eNPS): 34. Target: 45 by 2025 via hybrid work policy and L&D investment.`,
-    metadata: { domain: "Human Capital", source: "Talent Strategy 2024", tags: ["workforce", "reskilling", "talent", "eNPS"] },
+    content: `Horizon Bank – Podpůrné KPI: Deviation Rate, Cost per Case, Revenue per Client, Average Resolution Time
+Deviation rate: podíl nesouladů mezi finančními a klientskými daty (GL vs. klientské zůstatky). Počáteční stav: 5 %, cílový stav: 0,5 %.
+Cost per case: průměrné provozní náklady na zpracování jednoho klientského požadavku. Počáteční stav: 1 200 Kč na případ, cílový stav: 700 Kč na případ.
+Revenue per client: průměrný roční výnos generovaný jedním klientem. Počáteční stav: 3 000 Kč / klient / rok, cílový stav: 4 500 Kč / klient / rok.
+Average Resolution Time: průměrný čas potřebný k vyřešení klientského požadavku. Počáteční stav: 24 hodin, cílový stav: 2 hodiny.`,
+    metadata: { domain: "KPI", source: "Podpůrné KPI", tags: ["deviation", "cost", "resolution time"] },
+  },
+
+  {
+    content: `Horizon Bank – Use-case KPI: DIGI prodej
+Loan Production Volume: příjem z procent za úvěry. Počáteční stav: 1 mld. Kč, cílový stav: 4 mld. Kč. Přispívá k Cost-to-Income / Revenue.
+Počet nových klientů: Počáteční stav: 10 000, cílový stav: 100 000 ročně.
+Digital onboarding conversion rate: jeden z požadavků, který lze automatizovat. Počáteční stav: 35 %, cílový stav: 60 %. Přispívá k Active digital clients.
+
+Use-case KPI: Obsluha klienta
+NPS: přímý indikátor spokojenosti klientů s obsluhou a procesy. Počáteční stav: 6,5, cílový stav: 8,5.
+Úspora FTE: snižuje provozní náklady díky automatizaci. Počáteční stav: 0 %, cílový stav: 25 %. Přispívá k Cost-to-Income.
+Automation resolution rate: počáteční stav: 40 %, cílový stav: 80 %. Přispívá k Active digital clients.
+Revenue per Client: počáteční stav: 3 000 Kč, cílový stav: 4 500 Kč. Přispívá k Cost-to-Income / Revenue.`,
+    metadata: { domain: "KPI", source: "Use-case KPI", tags: ["DIGI prodej", "obsluha klienta", "FTE"] },
+  },
+
+  {
+    content: `Horizon Bank – Use-case KPI: Data Governance
+Data quality score: kvalitní data snižují náklady na opravy dat, chyby v reportingu a rework analýz. Počáteční stav: 85 %, cílový stav: 98 %. Přispívá k Cost-to-Income.
+Úspora FTE: počáteční stav: 0 %, cílový stav: 25 %.
+
+Use-case KPI: Underwriting
+Risk-Adjusted Margin (RAM): vygenerované úroky po odečtení provozních nákladů a očekávaných ztrát z rizika. Počáteční stav: 2,5 %, cílový stav: 4 %.
+Time-to-Money: doba od přijetí žádosti po skutečné čerpání prostředků klientem. Počáteční stav: 15 dní, cílový stav: 1 den. Přispívá k NPS.
+Cost per Memo: náklady na zpracování jednoho úvěrového případu. Počáteční stav: 1 500 Kč, cílový stav: 800 Kč.
+Customer Effort Score (CES): počet iterací nutnosti dodávat dokumenty ze strany klienta. Počáteční stav: 6, cílový stav: 9.
+Early Warning Hit Rate: procento identifikovaných signálů včasného varování, které vedly k reálné preventivní akci. Počáteční stav: 50 %, cílový stav: 80 %.`,
+    metadata: { domain: "KPI", source: "Use-case KPI", tags: ["data governance", "underwriting", "RAM", "risk"] },
+  },
+
+  {
+    content: `Horizon Bank – Use-case KPI: Investments a Steering
+Investments:
+Business Growth: objem zprostředkovaných transakcí (M&A/DCM). Počáteční stav: 5 mld. Kč, cílový stav: 10 mld. Kč.
+Risk Mitigation: objem nesplacených úvěrů (NPL) v portfoliu. Počáteční stav: 4 %, cílový stav: 2 %.
+Customer Conversion Rate: poměr konverze oslovených zákazníků. Počáteční stav: 20 %, cílový stav: 60 %.
+
+Steering:
+Deviation rate: odchylka systémů od účetní knihy. Počáteční stav: 5 %, cílový stav: 1 %.
+Včasnost: včasnost podání účetní závěrky. Počáteční stav: 85 %, cílový stav: 98 %.
+Doba detekce: doba uskutečnění a reálného zaznamenání. Počáteční stav: 3 dny, cílový stav: 1 den.
+
+Risk ESG:
+Rizikově vážená aktiva: kolik kapitálu musí banka držet. Počáteční stav: 65 %, cílový stav: 55 %.
+RAROC (Rizikově upravená návratnost kapitálu): ziskovost investice po zohlednění rizika. Počáteční stav: 10 %, cílový stav: 20 %.
+Zrychlení schvalování hypoték: počáteční stav: 14 dní, cílový stav: 5 dní.`,
+    metadata: { domain: "KPI", source: "Use-case KPI", tags: ["investments", "steering", "ESG", "RAROC"] },
+  },
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // SOURCE: Strategický_rámec_banky_copy1.docx
+  // ══════════════════════════════════════════════════════════════════════════
+
+  {
+    content: `Horizon Bank – Brand, Purpose a Mise
+Brand claim: Rosteme spolu.
+Purpose: Pomáháme lidem vidět a využít finanční příležitosti ve správný čas.
+Mise: Být bankou, která díky datům a AI rozumí životní situaci klienta a proaktivně mu pomáhá využívat finanční příležitosti ve správný čas.
+Vize: Stát se nejdůvěryhodnější a nejvíce proaktivní AI-driven bankou na českém trhu.
+Základní produktová filozofie: Anticipativní bankovnictví s vysokou mírou personalizace a zároveň jednoduchosti.`,
+    metadata: { domain: "Strategický rámec", source: "Strategický rámec banky", tags: ["vize", "mise", "brand", "purpose"] },
+  },
+
+  {
+    content: `Horizon Bank – Cílové segmenty: Gen Z (18–30 let)
+Gen Z představuje strategicky důležitý segment z dlouhodobého hlediska. Tito klienti jsou na začátku své finanční životní dráhy.
+Charakteristika: digitálně orientovaná generace, preferuje mobilní bankovnictví a fintech řešení, vysoká otevřenost inovativním bankovním službám.
+Více než 70 % Gen Z preferuje správu financí prostřednictvím mobilních aplikací. Až 76 % preferuje mobilní bankovnictví jako hlavní způsob správy financí.
+Velikost segmentu: přibližně 2 miliony lidí v ČR.
+Finanční potenciál: 864 miliard Kč roční disponibilní příjem, cca 600 miliard Kč bankovní potenciál (úspory, investice, úvěry).
+Strategický význam: dlouhodobá hodnota klienta (lifetime value), rychlá adopce digitálních služeb, potenciál růstu investic a úvěrů v průběhu života.`,
+    metadata: { domain: "Strategický rámec", source: "Cílové segmenty", tags: ["Gen Z", "segment", "digital", "retail"] },
+  },
+
+  {
+    content: `Horizon Bank – Cílové segmenty: SME (malé a střední podniky)
+Segment SME představuje pro banku klíčovou obchodní příležitost díky vysoké potřebě financování, řízení cashflow a efektivní správy financí.
+Charakteristika: firmy s potřebou financování, omezenější finanční rezervy, citlivé cashflow, důraz na rychlost a jednoduchost.
+Velikost segmentu: přibližně 1,15 milionu podniků.
+Finanční potenciál: 1,6 bilionu Kč bankovního potenciálu.
+Market share cíle: krátkodobý (3–5 let): 3–5 % retailového trhu; delší horizont (5–10 let): 5–8 % retailového trhu.
+Strategický význam: vysoká potřeba úvěrů, poptávka po automatizaci, prostor pro AI-driven risk a underwriting.`,
+    metadata: { domain: "Strategický rámec", source: "Cílové segmenty", tags: ["SME", "segment", "cashflow", "úvěry"] },
+  },
+
+  {
+    content: `Horizon Bank – Value Proposition a Konkurenční výhody
+Value proposition:
+1. Personalizovaná finanční doporučení: banka analyzuje data o chování klienta a nabízí řešení šitá na míru (úspory, investice, úvěry).
+2. Proaktivní pomoc v důležitých finančních situacích: klient nemusí sám hledat možnosti – banka ho upozorní, když může ušetřit nebo investovat.
+3. Úspora času a jednoduchost: finanční správa je jednoduchá, banka filtruje informace a nabízí jen relevantní řešení.
+4. Rychlé a digitální procesy: založení účtu, schválení úvěru nebo další služby probíhají rychle a bez zbytečné administrativy.
+
+Konkurenční výhody:
+- Finanční nabídky šité na míru
+- Digital only
+- Rychlost (rychlé schválení úvěrů a hypoték)
+- Nižší hypoteční a úvěrové sazby`,
+    metadata: { domain: "Strategický rámec", source: "Value Proposition", tags: ["value proposition", "konkurenční výhody", "digital only"] },
+  },
+
+  {
+    content: `Horizon Bank – Konkurenční prostředí na českém trhu
+Největší hráči: Česká spořitelna (4,55 mil. klientů, tržby 56,486 mld. Kč), ČSOB (4,31 mil. klientů, bilanční suma 1,869 bil. Kč), Komerční banka (2,20 mil. klientů).
+Air Bank: digitálně orientovaná, 1,2 mil. klientů, nejlepší UX, slabší nabídka pro SME.
+Fio banka: 1,4 mil. klientů, nízkonákladový model, kombinace bankovnictví s investicemi.
+Raiffeisenbank: 1,8 mil. klientů, silná SME a univerzální nabídka, vyšší komplexita a náklady.
+
+Naše odlišení:
+1. AI-driven personalizace: využití AI pro proaktivní finanční doporučení.
+2. Digital-first architektura: bankovní infrastruktura navržená od začátku jako digitální.
+3. Rychlé rozhodování v úvěrech: využití AI modelů pro underwriting.`,
+    metadata: { domain: "Strategický rámec", source: "Konkurenční prostředí", tags: ["konkurence", "Air Bank", "Česká spořitelna", "trh"] },
+  },
+
+  {
+    content: `Horizon Bank – Organizační struktura a obchodní linie
+1. Data & Customer Intelligence (CDO): personalizace služeb, klientská data, zákaznická zkušenost. Týmy: Digi prodej, Obsluha klienta, Data Governance.
+2. Technology & AI (CTO): technologická platforma, AI modely, digitální infrastruktura. Týmy: ICM GenAI Data Use Cases, Data Operations & Architecture.
+3. Finance & Investment (CFO): finanční řízení, řízení kapitálu, investiční produkty. Týmy: Steering Data, Investment Banking.
+4. Risk & Compliance (CRO): úvěrové a tržní riziko, ESG risk, regulatorní compliance. Týmy: Risk ESG, Regulatory & Compliance.
+
+Produkty:
+Retail: účty, karty, úvěry, hypotéky, pojištění, FX, investice.
+Corporate: účty, úvěry, investice, správa firemní likvidity, AI Investment Advisor.`,
+    metadata: { domain: "Strategický rámec", source: "Organizační struktura", tags: ["CDO", "CTO", "CFO", "CRO", "struktura"] },
+  },
+
+  {
+    content: `Horizon Bank – Kanály pro komunikaci s klientem
+Mobilní bankovnictví: hlavní komunikační kanál. Personalizovaná doporučení v reálném čase.
+Call centrum: podpůrný kanál pro komplexní problémy.
+Email a Push notifikace: proaktivní komunikace – upozornění na finanční příležitosti.
+Pobočka: převážně pro corporate klienty. Plánováno 20–30 poboček ve velkých městech (Praha, Brno, Ostrava, Plzeň). Retailní segment obsluhován digitálně.`,
+    metadata: { domain: "Strategický rámec", source: "Kanály komunikace", tags: ["mobile", "push notifikace", "pobočky", "omnichannel"] },
+  },
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // SOURCE: Mapovani_regulaci_Tym6.docx
+  // ══════════════════════════════════════════════════════════════════════════
+
+  {
+    content: `Horizon Bank – Regulatorní mapování: Vlastní datové produkty (Tým 6 Strategy)
+Datové produkty: DP_STRATEGY_MARKET_RATE_SNAPSHOT a DP_STRATEGY_KNOWLEDGE_SNAPSHOT.
+
+BCBS 239: Market Rate Snapshot přispívá ✓ – sazby ČNB, DQ pravidla, lineage Bronze→Gold. Knowledge Snapshot přispívá ✓ – critical_data_element = true, trackovatelné zdroje.
+BASEL IV: Market Rate Snapshot přispívá ✓ – referenční tržní data pro výpočty závislé na úrokových sazbách. Knowledge Snapshot N/A – textové dokumenty, nepodílí se na RWA.
+EBA Guidelines on data governance: oba produkty přispívají ✓ – data contract (owner, steward, DQ pravidla, sensitivity), DQ skóre monitorováno přes Great Expectations.
+DORA: oba produkty obojí ↕ – přístupy řízeny přes Unity Catalog, pravidelná revize oprávnění.
+MiFID II: Market Rate Snapshot přispívá ✓ – best-execution analýzy, SLA retence 36 měsíců.
+GDPR: oba produkty N/A – gdpr_relevant = false, žádná PII data.`,
+    metadata: { domain: "Regulace", source: "Mapování regulací Tým 6", tags: ["BCBS 239", "BASEL IV", "EBA", "DORA", "GDPR", "MiFID II"] },
+  },
+
+  {
+    content: `Horizon Bank – Regulatorní mapování: AI Act a IFRS 9
+AI Act – Umělá inteligence:
+Knowledge Snapshot: obojí ↕ – vstupuje do RAG pipeline. Obsah musí být schválený a trackovatelný. High-risk AI systémy vyžadují datovou kvalitu pro trénink modelů a auditovatelnost.
+Market Rate Snapshot: N/A – produkt není vstupem do žádného AI/ML systému, slouží pro reporting a dashboardy.
+
+IFRS 9 – Finanční výkaznictví:
+Market Rate Snapshot: přispívá ✓ – sazby ČNB jsou referenční data pro finanční výpočty a backtesting ECL modelů. Retence 36 měsíců zajišťuje historickou řadu.
+Knowledge Snapshot: N/A – textové dokumenty, nesouvisí s finančním výkaznictvím.`,
+    metadata: { domain: "Regulace", source: "Mapování regulací Tým 6", tags: ["AI Act", "IFRS 9", "RAG", "compliance"] },
+  },
+
+  {
+    content: `Horizon Bank – Regulatorní mapování: Vstupní datové produkty pro Strategy Dashboard
+cs_kpi_performance (Tým 3): BCBS 239 – critical_data_element = true, DQ check (not_null, range, freshness). GDPR omezuje ⚠ – pouze agregovaná data, ne event-level data s customer_id.
+gl_deviation_snapshot (Tým 4): BCBS 239 – critical_data_element = true, DQ check not_null na DIFF_BAL_CALC. IFRS 9 – obojí ↕, produkt přímo podléhá IFRS 9.
+dp_credit_risk_credit_memo_profile (Tým 7): BCBS 239 – outstanding_balance_czk vstup pro Revenue výpočet, freshness D+1. GDPR omezuje ⚠ – Confidential, pouze pro interní výpočet, nesmí být zobrazeno v dashboardu.
+DORA (všechny vstupy): omezuje ⚠ – SLA dodavatelů (D+1/T+1) monitorováno přes freshness check v DQ notebooku.
+AML: N/A – žádná klientská transakční data, pouze agregovaná KPI, mimo scope AML.`,
+    metadata: { domain: "Regulace", source: "Mapování regulací Tým 6", tags: ["dashboard", "datové produkty", "DQ", "BCBS 239", "GDPR", "DORA"] },
   },
 ];
 
 // ─── Chunking ────────────────────────────────────────────────────────────────
-// For production, implement sliding-window chunking with overlap.
-// Here each document is already a single semantic chunk.
 
-function chunkDocument(doc, maxChunkChars = 800) {
+function chunkDocument(doc, maxChunkChars = 900) {
   const { content, metadata } = doc;
-  const chunks = [];
-  // Simple paragraph-based chunking
   const paragraphs = content.split("\n").filter((p) => p.trim().length > 0);
+  const chunks = [];
   let current = "";
 
   for (const para of paragraphs) {
-    if ((current + "\n" + para).length > maxChunkChars && current.length > 0) {
+    const candidate = current ? current + "\n" + para : para;
+    if (candidate.length > maxChunkChars && current.length > 0) {
       chunks.push({ content: current.trim(), metadata });
       current = para;
     } else {
-      current = current ? current + "\n" + para : para;
+      current = candidate;
     }
   }
   if (current.trim()) chunks.push({ content: current.trim(), metadata });
   return chunks;
 }
 
-// ─── Embedding Generation (batched) ─────────────────────────────────────────
+// ─── Embedding Generation ────────────────────────────────────────────────────
+
 const EMBEDDING_MODEL = "text-embedding-3-small";
-const BATCH_SIZE = 20; // OpenAI recommends ≤2048 per request; 20 chunks is safe
+const BATCH_SIZE = 20;
 
 async function generateEmbeddings(texts) {
   const response = await openai.embeddings.create({
     model: EMBEDDING_MODEL,
     input: texts,
   });
-  // Response.data is ordered identically to input
   return response.data.map((item) => item.embedding);
 }
 
@@ -201,52 +328,55 @@ async function upsertChunks(chunks) {
   if (error) throw new Error(`Supabase insert error: ${error.message}`);
 }
 
-// ─── Main Pipeline ───────────────────────────────────────────────────────────
+// ─── Main Pipeline ────────────────────────────────────────────────────────────
 
 async function ingest() {
-  console.log("🏦  Horizon Bank RAG – Ingestion Pipeline starting…\n");
+  console.log("🏦  Horizon Bank RAG – Ingestion Pipeline\n");
+  console.log(`📚  Documents loaded: ${HORIZON_BANK_DOCUMENTS.length}`);
 
-  // 1. Flatten documents into chunks
-  const allChunks = HORIZON_BANK_DOCUMENTS.flatMap((doc) =>
-    chunkDocument(doc)
-  );
-  console.log(`📄  Total chunks to ingest: ${allChunks.length}`);
+  const allChunks = HORIZON_BANK_DOCUMENTS.flatMap((doc) => chunkDocument(doc));
+  console.log(`📄  Total chunks after splitting: ${allChunks.length}\n`);
 
-  // 2. Process in batches
+  const totalBatches = Math.ceil(allChunks.length / BATCH_SIZE);
+
   for (let i = 0; i < allChunks.length; i += BATCH_SIZE) {
     const batch = allChunks.slice(i, i + BATCH_SIZE);
-    const batchIndex = Math.floor(i / BATCH_SIZE) + 1;
-    const totalBatches = Math.ceil(allChunks.length / BATCH_SIZE);
+    const batchNum = Math.floor(i / BATCH_SIZE) + 1;
 
-    console.log(`\n⚙️   Batch ${batchIndex}/${totalBatches} – embedding ${batch.length} chunks…`);
+    console.log(`⚙️   Batch ${batchNum}/${totalBatches} – embedding ${batch.length} chunks...`);
 
     try {
-      // 3. Generate embeddings for this batch
       const texts = batch.map((c) => c.content);
       const embeddings = await generateEmbeddings(texts);
 
-      // 4. Attach embeddings to chunks
       const chunksWithEmbeddings = batch.map((chunk, idx) => ({
         ...chunk,
         embedding: embeddings[idx],
       }));
 
-      // 5. Upsert into Supabase
       await upsertChunks(chunksWithEmbeddings);
-      console.log(`✅  Batch ${batchIndex} upserted successfully.`);
+      console.log(`✅  Batch ${batchNum} upserted.`);
     } catch (err) {
-      console.error(`❌  Batch ${batchIndex} failed: ${err.message}`);
-      // In production: implement exponential backoff + dead-letter queue
+      console.error(`❌  Batch ${batchNum} failed: ${err.message}`);
       throw err;
     }
 
-    // Throttle to stay within OpenAI rate limits (3 RPM on free tier, 500 RPM on tier 1)
     if (i + BATCH_SIZE < allChunks.length) {
-      await new Promise((r) => setTimeout(r, 500));
+      await new Promise((r) => setTimeout(r, 300));
     }
   }
 
-  console.log("\n🎉  Ingestion complete. All chunks embedded and stored in Supabase.");
+  console.log("\n🎉  Ingestion complete. Your real documents are now in Supabase.");
+  console.log("\n📊  Chunks ingested by domain:");
+
+  const domains = {};
+  allChunks.forEach((c) => {
+    const d = c.metadata.domain;
+    domains[d] = (domains[d] || 0) + 1;
+  });
+  Object.entries(domains).forEach(([domain, count]) => {
+    console.log(`     ${domain}: ${count} chunks`);
+  });
 }
 
 ingest().catch((err) => {

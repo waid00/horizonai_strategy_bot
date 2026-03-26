@@ -70,10 +70,20 @@ $$;
 -- ============================================================
 ALTER TABLE documents ENABLE ROW LEVEL SECURITY;
 
--- API route (server-side) uses SERVICE_ROLE key → no RLS restriction needed.
--- Optionally add a policy if you expose the table via anon key elsewhere.
--- CREATE POLICY "service_role_only" ON documents
---   USING (auth.role() = 'service_role');
+-- Explicit service-role policies for projects where RLS is enforced on all keys.
+DROP POLICY IF EXISTS "documents_service_role_insert" ON documents;
+CREATE POLICY "documents_service_role_insert"
+  ON documents
+  FOR INSERT
+  TO service_role
+  WITH CHECK (true);
+
+DROP POLICY IF EXISTS "documents_service_role_select" ON documents;
+CREATE POLICY "documents_service_role_select"
+  ON documents
+  FOR SELECT
+  TO service_role
+  USING (true);
 
 -- ============================================================
 -- 5. Helper: wipe and reseed (development only)
