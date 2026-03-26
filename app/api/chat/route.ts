@@ -273,11 +273,7 @@ export async function POST(req: NextRequest) {
     });
 
     // Return a streaming response (compatible with Vercel AI SDK useChat hook)
-    return result.toTextStreamResponse({
-  headers: {
-    "Content-Type": "text/plain; charset=utf-8",
-  },
-});
+    return result.toUIMessageStreamResponse();
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     console.error("[/api/chat] Error:", message);
