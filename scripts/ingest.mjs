@@ -241,6 +241,7 @@ Pobočka: převážně pro corporate klienty. Plánováno 20–30 poboček ve ve
     metadata: { domain: "Strategický rámec", source: "Kanály komunikace", tags: ["mobile", "push notifikace", "pobočky", "omnichannel"] },
   },
 
+
   // ══════════════════════════════════════════════════════════════════════════
   // SOURCE: Mapovani_regulaci_Tym6.docx
   // ══════════════════════════════════════════════════════════════════════════
