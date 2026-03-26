@@ -168,14 +168,21 @@ Základní produktová filozofie: Anticipativní bankovnictví s vysokou mírou 
   },
 
   {
-    content: `Horizon Bank – Cílové segmenty: Gen Z (18–30 let)
-Gen Z představuje strategicky důležitý segment z dlouhodobého hlediska. Tito klienti jsou na začátku své finanční životní dráhy.
+    content: `Horizon Bank – Cílové segmenty: Gen Z (18–30 let) – primární cílová skupina
+Gen Z představuje primárně cílový segment banky z dlouhodobého hlediska. Tito klienti jsou na začátku své finanční životní dráhy.
+Věková skupina: 18–30 let. Gen Z jsou lidé narozeni přibližně v letech 1995–2010. Dvacátníci a třicátníci (do 30 let) patří do tohoto segmentu.
 Charakteristika: digitálně orientovaná generace, preferuje mobilní bankovnictví a fintech řešení, vysoká otevřenost inovativním bankovním službám.
 Více než 70 % Gen Z preferuje správu financí prostřednictvím mobilních aplikací. Až 76 % preferuje mobilní bankovnictví jako hlavní způsob správy financí.
 Velikost segmentu: přibližně 2 miliony lidí v ČR.
 Finanční potenciál: 864 miliard Kč roční disponibilní příjem, cca 600 miliard Kč bankovní potenciál (úspory, investice, úvěry).
-Strategický význam: dlouhodobá hodnota klienta (lifetime value), rychlá adopce digitálních služeb, potenciál růstu investic a úvěrů v průběhu života.`,
-    metadata: { domain: "Strategický rámec", source: "Cílové segmenty", tags: ["Gen Z", "segment", "digital", "retail"] },
+Strategický význam: dlouhodobá hodnota klienta (lifetime value), rychlá adopce digitálních služeb, potenciál růstu investic a úvěrů v průběhu života.
+
+Vztah k ostatním věkovým skupinám:
+Mileniálové (millennials, 31–45 let, narozeni přibližně 1980–1994): nejsou primárním cílovým segmentem banky. Horizont Bank se na mileniály nesoustředí jako na hlavní cílovou skupinu.
+Generace X (46–60 let): není cílovým segmentem.
+Lidé ve věku 40 let (čtyřicátníci) patří do generace mileniálů – tedy nejsou v primárním zaměření banky.
+Banka cílí na Gen Z jako hlavní retail segment a na SME (malé a střední podniky) jako korporátní segment.`,
+    metadata: { domain: "Strategický rámec", source: "Cílové segmenty", tags: ["Gen Z", "mileniálové", "millennials", "věková skupina", "cílová skupina", "segment", "digital", "retail"] },
   },
 
   {
@@ -241,9 +248,36 @@ Pobočka: převážně pro corporate klienty. Plánováno 20–30 poboček ve ve
     metadata: { domain: "Strategický rámec", source: "Kanály komunikace", tags: ["mobile", "push notifikace", "pobočky", "omnichannel"] },
   },
 
-  // ══════════════════════════════════════════════════════════════════════════
-  // SOURCE: Mapovani_regulaci_Tym6.docx
-  // ══════════════════════════════════════════════════════════════════════════
+  {
+    content: `Horizon Bank – Strategický rámec: Use-case Steering – reconciliace GL a klientských dat
+Tým Steering (pod CFO – Finance & Investment) se zaměřuje na zajištění přesnosti a integrity finančního reportingu banky.
+
+Strategické iniciativy týmu Steering:
+- Identifikace a přesná kvantifikace odchylek (deviací) mezi zůstatky hlavní knihy (GL_BALANCES) a klientskými daty (WORK_LDS_BALANCES / klientskými zůstatky).
+- Sestavení DEVIATION_REPORT, který slouží jako podklad pro reporting mateřské společnosti a rozhodovací procesy banky.
+- Nasazení AI detekce anomálií nad GL zůstatky pro včasné zachycení odchylek (early warning systém).
+- Aplikace účetní logiky do databázových dotazů a řešení datové rekonciliace.
+- Porovnávání zůstatků na úrovni globálních účtů (GCOA).
+
+Napojení na strategické KPI banky:
+- Deviation rate: počáteční stav 5 %, cílový stav 1 % (potažmo 0,5 %). Práce Steering týmu přímo přispívá k dosažení tohoto KPI.
+- Včasnost: cílová hodnota 98 %. Zkrácení doby detekce odchylky je klíčovým výstupem.
+- Doba detekce odchylky: počáteční stav 3 dny, cílový stav 1 den.
+- Cost-to-Income (North Star KPI): automatizace finanční reconciliace snižuje provozní náklady, přispívá ke snížení Cost-to-Income z 50 % na 30 %.
+
+Soulad s misí a vizí banky:
+- Využití AI/ML modelů na historických odchylkách odpovídá strategické vizi „AI-driven bank".
+- Datová reconciliace a BCBS 239 compliance (kritické datové elementy, DQ pravidla) je součástí regulatorního rámce banky.
+- Přístup k datům primárních systémů a datovým skladům, znalost účetních dat a číselníků jsou definované enablery pro Use-case Steering.
+
+Metriky úspěchu (KPIs) Steering týmu:
+- Objem deviací: procento objasněných deviací (target: 98–100 %).
+- Včasnost a chybovost výstupu.
+- Čas detekce odchylky: od vzniku po notifikaci (target: 1 den).`,
+    metadata: { domain: "Strategický rámec", source: "Use-case Steering", tags: ["steering", "GL", "deviation", "reconciliace", "DEVIATION_REPORT", "AI detekce", "early warning", "GCOA", "účetnictví"] },
+  },
+
+
 
   {
     content: `Horizon Bank – Regulatorní mapování: Vlastní datové produkty (Tým 6 Strategy)

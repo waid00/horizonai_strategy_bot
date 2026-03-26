@@ -253,13 +253,26 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // The query for vector search is the last user message (+ external text for gap-analysis)
+    // The query for vector search is the last user message.
+    // For long messages (e.g. user pastes a big document alongside a question),
+    // only the first line / leading sentence is used for the embedding so that
+    // the vector search captures the *intent* rather than the pasted body text.
+    // In gap-analysis mode the external text is passed to the LLM separately and
+    // must NOT be mixed into the embedding query.
     const lastUserMessage =
       [...modelMessages].reverse().find((message) => message.role === "user")?.content ?? "";
-    const searchQuery =
-      mode === "gap-analysis" && externalText
-        ? `${lastUserMessage}\n\n${externalText}`
-        : lastUserMessage;
+
+    function extractSearchIntent(message: string): string {
+      if (message.length <= 300) return message;
+      // Use the first substantive line (≥ 5 chars) as the search intent for long messages.
+      // This prevents a pasted multi-paragraph document from dominating the embedding.
+      const MIN_LINE_LENGTH = 5;
+      const firstLine = message.split("\n").find((l) => l.trim().length >= MIN_LINE_LENGTH)?.trim();
+      if (firstLine && firstLine.length >= MIN_LINE_LENGTH) return firstLine;
+      return message.slice(0, 300);
+    }
+
+    const searchQuery = extractSearchIntent(lastUserMessage);
 
     // ── Step 1: Semantic retrieval ─────────────────────────────────────────
     let retrievedChunks: MatchedDocument[] = [];
