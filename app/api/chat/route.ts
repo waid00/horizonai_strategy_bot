@@ -10,7 +10,7 @@
  *   5. Stream response from OpenAI gpt-4o via Vercel AI SDK
  */
 
-import { createClient } from "@supabase/supabase-js";
+import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import { streamText } from "ai";
 import { openai } from "@ai-sdk/openai";
 import OpenAI from "openai";
@@ -22,14 +22,27 @@ export const runtime = "edge";
 
 // ─── Clients ─────────────────────────────────────────────────────────────────
 
-// Supabase: service role key is required to call RPC functions and bypass RLS
-const supabase = createClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
+// Lazily-initialised clients: env vars are only read on first request so that
+// the module can be imported during build without throwing "supabaseUrl is required".
+let _supabase: SupabaseClient | null = null;
+let _openaiRaw: OpenAI | null = null;
 
-// Raw OpenAI client for embedding generation (Vercel AI SDK doesn't expose embeddings)
-const openaiRaw = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
+function getSupabase() {
+  if (!_supabase) {
+    _supabase = createClient(
+      process.env.SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!
+    );
+  }
+  return _supabase;
+}
+
+function getOpenAI() {
+  if (!_openaiRaw) {
+    _openaiRaw = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
+  }
+  return _openaiRaw;
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -90,14 +103,14 @@ async function retrieveContext(
   matchCount = 5
 ): Promise<MatchedDocument[]> {
   // 1. Embed the query
-  const embeddingResponse = await openaiRaw.embeddings.create({
+  const embeddingResponse = await getOpenAI().embeddings.create({
     model: "text-embedding-3-small",
     input: query,
   });
   const queryEmbedding = embeddingResponse.data[0].embedding;
 
   // 2. Call Supabase RPC – cosine similarity search
-  const { data, error } = await supabase.rpc("match_documents", {
+  const { data, error } = await getSupabase().rpc("match_documents", {
     query_embedding: queryEmbedding,
     match_threshold: matchThreshold,
     match_count: matchCount,
@@ -115,11 +128,19 @@ async function retrieveContextWithFallback(query: string): Promise<MatchedDocume
   const thresholdPlan = [0.35, 0.25, 0.15, 0.0];
 
   for (const threshold of thresholdPlan) {
-    console.log(`[RAG] retrieval attempt threshold=${threshold.toFixed(2)}`);
-    const chunks = await retrieveContext(query, threshold, 8);
-    console.log(`[RAG] retrieval result threshold=${threshold.toFixed(2)} chunks=${chunks.length}`);
-    if (chunks.length > 0) {
-      return chunks;
+    try {
+      console.log(`[RAG] retrieval attempt threshold=${threshold.toFixed(2)}`);
+      const chunks = await retrieveContext(query, threshold, 8);
+      console.log(`[RAG] retrieval result threshold=${threshold.toFixed(2)} chunks=${chunks.length}`);
+      if (chunks.length > 0) {
+        return chunks;
+      }
+    } catch (err) {
+      // RPC errors (e.g. function not found) are not threshold-dependent.
+      // Re-throw immediately so the caller can surface the real error.
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[RAG] RPC error at threshold=${threshold.toFixed(2)}: ${msg}`);
+      throw err;
     }
   }
 
@@ -236,8 +257,21 @@ export async function POST(req: NextRequest) {
     try {
       retrievedChunks = await retrieveContextWithFallback(searchQuery);
     } catch (retrievalError) {
-      console.error("Retrieval error (all thresholds failed):", retrievalError);
-      // Fail gracefully – model will use NO_CONTEXT_AVAILABLE guard
+      const msg = retrievalError instanceof Error ? retrievalError.message : String(retrievalError);
+      console.error("[RAG] Retrieval failed:", msg);
+
+      // Surface the RPC error to the client so the user can act on it.
+      // A common cause: the match_documents function hasn't been created yet
+      // (run supabase/schema.sql in the Supabase SQL Editor).
+      return new Response(
+        JSON.stringify({
+          error:
+            "RAG retrieval error – the Supabase match_documents function may not exist. " +
+            "Run supabase/schema.sql in the Supabase SQL Editor, then retry. " +
+            "Visit /api/health for a full diagnostic. Details: " + msg,
+        }),
+        { status: 500, headers: { "Content-Type": "application/json" } }
+      );
     }
 
     // ── Step 2: Build system prompt with injected context ─────────────────

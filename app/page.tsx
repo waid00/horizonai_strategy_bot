@@ -204,7 +204,10 @@ export default function HorizonBotPage() {
 
           <p className="disclaimer">
             Responses are generated exclusively from Horizon Bank internal documents.
-            Not for external distribution.
+            Not for external distribution.{" "}
+            <a href="/api/health" target="_blank" rel="noopener" className="health-link">
+              System diagnostics →
+            </a>
           </p>
         </section>
       </main>
@@ -469,6 +472,11 @@ export default function HorizonBotPage() {
           padding: 0.5rem 2rem 0.75rem;
           letter-spacing: 0.05em;
         }
+        .health-link {
+          color: #2d3748;
+          text-decoration: none;
+        }
+        .health-link:hover { color: #1a6ef5; }
 
         /* ── Error ───────────────────────────────────────────────────────── */
         .error-banner {
