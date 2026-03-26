@@ -125,7 +125,9 @@ async function retrieveContext(
 
 async function retrieveContextWithFallback(query: string): Promise<MatchedDocument[]> {
   // Progressive thresholds improve resilience to typos and short queries.
-  const thresholdPlan = [0.35, 0.25, 0.15, 0.0];
+  // -1.0 is the theoretical minimum for cosine similarity, ensuring any
+  // stored embedding is considered in the last-resort pass.
+  const thresholdPlan = [0.35, 0.25, 0.15, 0.0, -1.0];
 
   for (const threshold of thresholdPlan) {
     try {
@@ -144,7 +146,28 @@ async function retrieveContextWithFallback(query: string): Promise<MatchedDocume
     }
   }
 
-  return [];
+  // Last-resort fallback: if the RPC returns 0 rows at every threshold
+  // (e.g. because embeddings are NULL or the vector index is empty),
+  // fall back to a plain SELECT so the AI at least receives raw content.
+  console.warn("[RAG] RPC returned 0 results at all thresholds – falling back to direct table scan");
+  try {
+    const { data, error } = await getSupabase()
+      .from("documents")
+      .select("id, content, metadata")
+      .limit(8);
+
+    if (error) {
+      console.error("[RAG] Direct table scan error:", error.message);
+      return [];
+    }
+
+    const rows = (data ?? []) as Array<{ id: number; content: string; metadata: Record<string, unknown> }>;
+    console.log(`[RAG] Direct table scan returned ${rows.length} rows`);
+    return rows.map((r) => ({ ...r, similarity: 0 }));
+  } catch (fallbackErr) {
+    console.error("[RAG] Direct table scan threw:", String(fallbackErr));
+    return [];
+  }
 }
 
 // ─── Prompt Construction ──────────────────────────────────────────────────────
@@ -253,9 +276,14 @@ export async function POST(req: NextRequest) {
         : lastUserMessage;
 
     // ── Step 1: Semantic retrieval ─────────────────────────────────────────
+    console.log(`[RAG] query="${searchQuery.slice(0, 80)}" mode=${mode}`);
     let retrievedChunks: MatchedDocument[] = [];
     try {
       retrievedChunks = await retrieveContextWithFallback(searchQuery);
+      console.log(`[RAG] retrieval complete chunks=${retrievedChunks.length}` +
+        (retrievedChunks.length > 0
+          ? ` top_similarity=${retrievedChunks[0].similarity.toFixed(3)} top_domain=${retrievedChunks[0].metadata?.domain ?? "unknown"}`
+          : " – no chunks found, will respond with insufficient-data message"));
     } catch (retrievalError) {
       const msg = retrievalError instanceof Error ? retrievalError.message : String(retrievalError);
       console.error("[RAG] Retrieval failed:", msg);
