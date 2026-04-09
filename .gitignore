@@ -45,3 +45,7 @@ next-env.d.ts
 
 
 /docs
+
+# Runtime document uploads – keep directory, ignore contents
+/data/uploads/*
+!/data/uploads/.gitkeep

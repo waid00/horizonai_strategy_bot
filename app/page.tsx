@@ -10,18 +10,32 @@
  *  - Renders markdown tables from LLM output
  */
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { useChat } from "@ai-sdk/react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-type Mode = "chat" | "gap-analysis";
+type Mode = "chat" | "gap-analysis" | "upload";
+
+interface UploadedFile {
+  name: string;
+  size: number;
+  modified: string;
+}
 
 export default function HorizonBotPage() {
   const [mode, setMode] = useState<Mode>("chat");
   const [externalText, setExternalText] = useState("");
   const [input, setInput] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Upload mode state
+  const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
+  const [uploadStatus, setUploadStatus] = useState("");
+  const [ingestLog, setIngestLog] = useState<string[]>([]);
+  const [isIngesting, setIsIngesting] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const logEndRef = useRef<HTMLDivElement>(null);
 
   // Vercel AI SDK useChat: manages messages, input, and streaming state
   const { messages, sendMessage, status, error } = useChat();
@@ -57,6 +71,102 @@ export default function HorizonBotPage() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  // ── Upload mode helpers ────────────────────────────────────────────────────
+
+  const fetchUploadedFiles = useCallback(async () => {
+    try {
+      const res = await fetch("/api/upload");
+      const data = await res.json();
+      if (data.files) setUploadedFiles(data.files);
+    } catch {
+      // silently ignore network errors while listing
+    }
+  }, []);
+
+  useEffect(() => {
+    if (mode === "upload") fetchUploadedFiles();
+  }, [mode, fetchUploadedFiles]);
+
+  // Auto-scroll ingest log
+  useEffect(() => {
+    logEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [ingestLog]);
+
+  async function handleFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    setUploadStatus("");
+
+    for (const file of Array.from(files)) {
+      setUploadStatus(`Uploading ${file.name}…`);
+      const formData = new FormData();
+      formData.append("file", file);
+      try {
+        const res = await fetch("/api/upload", { method: "POST", body: formData });
+        const data = await res.json();
+        if (data.error) {
+          setUploadStatus(`❌ ${data.error}`);
+        } else {
+          setUploadStatus(`✅ ${data.filename} uploaded`);
+        }
+      } catch (err) {
+        setUploadStatus(`❌ Upload failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    if (fileInputRef.current) fileInputRef.current.value = "";
+    await fetchUploadedFiles();
+  }
+
+  async function runIngest() {
+    setIsIngesting(true);
+    setIngestLog([]);
+
+    try {
+      const res = await fetch("/api/ingest", { method: "POST" });
+      if (!res.ok || !res.body) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        // Parse complete SSE lines from the buffer
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          try {
+            const payload = JSON.parse(line.slice(6)) as {
+              msg?: string;
+              done?: boolean;
+              ok?: boolean;
+            };
+            if (payload.msg) {
+              setIngestLog((prev) => [...prev, payload.msg as string]);
+            }
+          } catch {
+            // skip malformed SSE frames
+          }
+        }
+      }
+    } catch (err) {
+      setIngestLog((prev) => [
+        ...prev,
+        `❌ Error: ${err instanceof Error ? err.message : String(err)}`,
+      ]);
+    } finally {
+      setIsIngesting(false);
+    }
+  }
+
   return (
     <div className="app-shell">
       {/* ── Header ─────────────────────────────────────────────────────── */}
@@ -82,134 +192,228 @@ export default function HorizonBotPage() {
             >
               Gap Analysis
             </button>
+            <button
+              className={`mode-btn ${mode === "upload" ? "active" : ""}`}
+              onClick={() => setMode("upload")}
+            >
+              Upload Docs
+            </button>
           </nav>
         </div>
       </header>
 
       {/* ── Main Layout ─────────────────────────────────────────────────── */}
       <main className="main">
-        {/* Gap Analysis Panel */}
-        {mode === "gap-analysis" && (
-          <aside className="gap-panel">
-            <label className="gap-label">
-              External Document / Current State Input
-              <span className="gap-hint">
-                Paste external strategy text to compare against Horizon Bank internal data
-              </span>
-            </label>
-            <textarea
-              className="gap-textarea"
-              value={externalText}
-              onChange={(e) => setExternalText(e.target.value)}
-              placeholder="Paste external bank strategy, competitor analysis, or current state description here…"
-              rows={10}
-            />
-          </aside>
-        )}
-
-        {/* Message Thread */}
-        <section className="chat-section">
-          <div className="messages-container">
-            {messages.length === 0 && (
-              <div className="empty-state">
-                <p className="empty-icon">◈</p>
-                <p className="empty-title">Strategy Intelligence Ready</p>
-                <p className="empty-body">
-                  {mode === "chat"
-                    ? "Ask any question about Horizon Bank's strategy, architecture, or compliance posture."
-                    : "Submit external text in the left panel, then ask a comparison question."}
+        {mode === "upload" ? (
+          /* ── Upload Panel ─────────────────────────────────────────────── */
+          <section className="upload-panel">
+            <div className="upload-col">
+              {/* File picker */}
+              <div className="upload-card">
+                <p className="upload-section-label">ADD DOCUMENTS</p>
+                <p className="upload-hint">
+                  Supported formats: .pdf, .docx, .txt &nbsp;·&nbsp; Max 20 MB per file
                 </p>
-                <div className="example-pills">
-                  {[
-                    "What is the cloud migration target?",
-                    "Explain the data mesh architecture.",
-                    "What is the NPS target for 2026?",
-                    "Summarise DORA compliance status.",
-                  ].map((q) => (
-                    <button
-                      key={q}
-                      className="pill"
-                      onClick={() => {
-                        setInput(q);
-                      }}
-                    >
-                      {q}
-                    </button>
+                <label className="file-pick-btn">
+                  Choose files…
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept=".pdf,.docx,.txt"
+                    multiple
+                    style={{ display: "none" }}
+                    onChange={handleFileUpload}
+                  />
+                </label>
+                {uploadStatus && (
+                  <p className="upload-status">{uploadStatus}</p>
+                )}
+              </div>
+
+              {/* File list */}
+              <div className="upload-card upload-card-grow">
+                <div className="upload-card-header">
+                  <p className="upload-section-label">UPLOADED FILES</p>
+                  <button className="refresh-btn" onClick={fetchUploadedFiles}>
+                    ↻
+                  </button>
+                </div>
+                {uploadedFiles.length === 0 ? (
+                  <p className="upload-empty">No files uploaded yet.</p>
+                ) : (
+                  <ul className="file-list">
+                    {uploadedFiles.map((f) => (
+                      <li key={f.name} className="file-item">
+                        <span className="file-name">{f.name}</span>
+                        <span className="file-meta">
+                          {(f.size / 1024).toFixed(1)} KB
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
+
+            {/* Ingest column */}
+            <div className="ingest-col">
+              <div className="upload-card upload-card-grow">
+                <div className="upload-card-header">
+                  <p className="upload-section-label">INGEST INTO DATABASE</p>
+                  <button
+                    className="ingest-btn"
+                    onClick={runIngest}
+                    disabled={isIngesting || uploadedFiles.length === 0}
+                  >
+                    {isIngesting ? "Ingesting…" : "▶ Run Ingest"}
+                  </button>
+                </div>
+                <p className="upload-hint">
+                  Embeds all uploaded files and stores them in Supabase so the
+                  chat can answer questions about them.
+                </p>
+                <div className="ingest-log">
+                  {ingestLog.length === 0 && !isIngesting && (
+                    <p className="log-empty">
+                      Press &ldquo;Run Ingest&rdquo; to start the pipeline.
+                    </p>
+                  )}
+                  {ingestLog.map((line, i) => (
+                    <p key={i} className="log-line">
+                      {line}
+                    </p>
                   ))}
+                  <div ref={logEndRef} />
                 </div>
               </div>
-            )}
-
-            {messages.map((msg) => (
-              <div
-                key={msg.id}
-                className={`message-row ${msg.role === "user" ? "user" : "assistant"}`}
-              >
-                <div className="message-bubble">
-                  <span className="message-role">
-                    {msg.role === "user" ? "YOU" : "HORIZON AI"}
+            </div>
+          </section>
+        ) : (
+          <>
+            {/* Gap Analysis Panel */}
+            {mode === "gap-analysis" && (
+              <aside className="gap-panel">
+                <label className="gap-label">
+                  External Document / Current State Input
+                  <span className="gap-hint">
+                    Paste external strategy text to compare against Horizon Bank internal data
                   </span>
-                  <div className="message-content">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                      {getMessageText(msg)}
-                    </ReactMarkdown>
-                  </div>
-                </div>
-              </div>
-            ))}
-
-            {isLoading && (
-              <div className="message-row assistant">
-                <div className="message-bubble loading">
-                  <span className="message-role">HORIZON AI</span>
-                  <div className="typing-indicator">
-                    <span />
-                    <span />
-                    <span />
-                  </div>
-                </div>
-              </div>
+                </label>
+                <textarea
+                  className="gap-textarea"
+                  value={externalText}
+                  onChange={(e) => setExternalText(e.target.value)}
+                  placeholder="Paste external bank strategy, competitor analysis, or current state description here…"
+                  rows={10}
+                />
+              </aside>
             )}
 
-            {error && (
-              <div className="error-banner">
-                ⚠ {error.message ?? "An error occurred. Please try again."}
+            {/* Message Thread */}
+            <section className="chat-section">
+              <div className="messages-container">
+                {messages.length === 0 && (
+                  <div className="empty-state">
+                    <p className="empty-icon">◈</p>
+                    <p className="empty-title">Strategy Intelligence Ready</p>
+                    <p className="empty-body">
+                      {mode === "chat"
+                        ? "Ask any question about Horizon Bank's strategy, architecture, or compliance posture."
+                        : "Submit external text in the left panel, then ask a comparison question."}
+                    </p>
+                    <div className="example-pills">
+                      {[
+                        "What is the cloud migration target?",
+                        "Explain the data mesh architecture.",
+                        "What is the NPS target for 2026?",
+                        "Summarise DORA compliance status.",
+                      ].map((q) => (
+                        <button
+                          key={q}
+                          className="pill"
+                          onClick={() => {
+                            setInput(q);
+                          }}
+                        >
+                          {q}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {messages.map((msg) => (
+                  <div
+                    key={msg.id}
+                    className={`message-row ${msg.role === "user" ? "user" : "assistant"}`}
+                  >
+                    <div className="message-bubble">
+                      <span className="message-role">
+                        {msg.role === "user" ? "YOU" : "HORIZON AI"}
+                      </span>
+                      <div className="message-content">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                          {getMessageText(msg)}
+                        </ReactMarkdown>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+
+                {isLoading && (
+                  <div className="message-row assistant">
+                    <div className="message-bubble loading">
+                      <span className="message-role">HORIZON AI</span>
+                      <div className="typing-indicator">
+                        <span />
+                        <span />
+                        <span />
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {error && (
+                  <div className="error-banner">
+                    ⚠ {error.message ?? "An error occurred. Please try again."}
+                  </div>
+                )}
+
+                <div ref={messagesEndRef} />
               </div>
-            )}
 
-            <div ref={messagesEndRef} />
-          </div>
+              {/* Input Area */}
+              <form className="input-form" onSubmit={handleFormSubmit}>
+                <input
+                  className="chat-input"
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  placeholder={
+                    mode === "gap-analysis"
+                      ? "Ask what gaps exist between the external text and Horizon Bank strategy…"
+                      : "Ask about Horizon Bank strategy, risk, data, technology…"
+                  }
+                  disabled={isLoading}
+                />
+                <button
+                  type="submit"
+                  className="send-btn"
+                  disabled={isLoading || !input.trim()}
+                >
+                  {isLoading ? "…" : "→"}
+                </button>
+              </form>
 
-          {/* Input Area */}
-          <form className="input-form" onSubmit={handleFormSubmit}>
-            <input
-              className="chat-input"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder={
-                mode === "gap-analysis"
-                  ? "Ask what gaps exist between the external text and Horizon Bank strategy…"
-                  : "Ask about Horizon Bank strategy, risk, data, technology…"
-              }
-              disabled={isLoading}
-            />
-            <button
-              type="submit"
-              className="send-btn"
-              disabled={isLoading || !input.trim()}
-            >
-              {isLoading ? "…" : "→"}
-            </button>
-          </form>
-
-          <p className="disclaimer">
-            Responses are generated exclusively from Horizon Bank internal documents.
-            Not for external distribution.{" "}
-            <a href="/api/health" target="_blank" rel="noopener" className="health-link">
-              System diagnostics →
-            </a>
-          </p>
-        </section>
+              <p className="disclaimer">
+                Responses are generated exclusively from Horizon Bank internal documents.
+                Not for external distribution.{" "}
+                <a href="/api/health" target="_blank" rel="noopener" className="health-link">
+                  System diagnostics →
+                </a>
+              </p>
+            </section>
+          </>
+        )}
       </main>
 
       <style jsx>{`
@@ -487,6 +691,64 @@ export default function HorizonBotPage() {
           border-radius: 4px;
           font-size: 0.75rem;
         }
+
+        /* ── Upload Panel ────────────────────────────────────────────────── */
+        .upload-panel {
+          flex: 1; display: flex; gap: 1.5rem; padding: 1.5rem 2rem; overflow: hidden;
+        }
+        .upload-col {
+          width: 300px; flex-shrink: 0; display: flex; flex-direction: column; gap: 1rem;
+        }
+        .ingest-col { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+        .upload-card {
+          background: #0d1117; border: 1px solid #1e2530; border-radius: 6px;
+          padding: 1rem 1.25rem; display: flex; flex-direction: column; gap: 0.6rem;
+        }
+        .upload-card-grow { flex: 1; overflow: hidden; }
+        .upload-card-header { display: flex; align-items: center; justify-content: space-between; }
+        .upload-section-label { font-size: 0.6rem; letter-spacing: 0.18em; color: #4a5568; }
+        .upload-hint { font-size: 0.65rem; color: #4a5568; line-height: 1.5; }
+        .file-pick-btn {
+          display: inline-block; background: transparent; border: 1px solid #1e2530;
+          color: #718096; padding: 0.4rem 1rem; font-family: inherit; font-size: 0.7rem;
+          letter-spacing: 0.08em; cursor: pointer; border-radius: 3px; transition: all 0.15s; text-align: center;
+        }
+        .file-pick-btn:hover { border-color: #1a6ef5; color: #1a6ef5; background: rgba(26,110,245,0.08); }
+        .upload-status { font-size: 0.7rem; color: #c8d0dc; word-break: break-all; }
+        .refresh-btn {
+          background: transparent; border: none; color: #4a5568; cursor: pointer;
+          font-size: 1rem; line-height: 1; padding: 0; transition: color 0.15s;
+        }
+        .refresh-btn:hover { color: #1a6ef5; }
+        .upload-empty { font-size: 0.7rem; color: #2d3748; margin-top: 0.25rem; }
+        .file-list {
+          list-style: none; overflow-y: auto; flex: 1;
+          display: flex; flex-direction: column; gap: 0.4rem; margin-top: 0.25rem;
+        }
+        .file-item {
+          display: flex; justify-content: space-between; align-items: center;
+          padding: 0.4rem 0.6rem; background: #0a0c10; border: 1px solid #1e2530;
+          border-radius: 3px; gap: 0.5rem;
+        }
+        .file-name {
+          font-size: 0.7rem; color: #c8d0dc; overflow: hidden;
+          text-overflow: ellipsis; white-space: nowrap; flex: 1;
+        }
+        .file-meta { font-size: 0.62rem; color: #4a5568; flex-shrink: 0; }
+        .ingest-btn {
+          background: #1a6ef5; border: none; color: white; padding: 0.35rem 1rem;
+          font-family: inherit; font-size: 0.7rem; letter-spacing: 0.08em;
+          cursor: pointer; border-radius: 3px; transition: background 0.15s; flex-shrink: 0;
+        }
+        .ingest-btn:hover:not(:disabled) { background: #1557cc; }
+        .ingest-btn:disabled { background: #1e2530; cursor: not-allowed; color: #4a5568; }
+        .ingest-log {
+          flex: 1; overflow-y: auto; background: #0a0c10; border: 1px solid #1e2530;
+          border-radius: 4px; padding: 0.75rem 1rem; margin-top: 0.25rem;
+          display: flex; flex-direction: column; gap: 0.2rem;
+        }
+        .log-empty { font-size: 0.7rem; color: #2d3748; }
+        .log-line { font-size: 0.72rem; color: #c8d0dc; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
       `}</style>
     </div>
   );
