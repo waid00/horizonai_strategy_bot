@@ -2,12 +2,12 @@
 /**
  * Horizon Bank Strategy Bot – Data Ingestion Pipeline
  *
- * Place your documents in the /docs folder in the project root.
- * Supported formats: .pdf, .docx, .txt
+ * Place your documents in /docs and/or /data/uploads in the project root.
+ * Supported formats: .pdf, .docx, .txt, .md, .csv
  *
  * Usage:
- *   npm run ingest                  # reads from ./docs
- *   npm run ingest -- ./my-folder   # reads from a custom folder
+ *   npm run ingest                     # reads from ./docs and ./data/uploads
+ *   npm run ingest -- ./my-folder      # reads from a custom folder only
  */
 
 import { createClient } from "@supabase/supabase-js";
@@ -75,19 +75,34 @@ async function upsertChunks(chunks) {
 // ─── Main Pipeline ────────────────────────────────────────────────────────────
 
 async function ingest() {
-  const folderPath = process.argv[2] ?? "./docs";
-  console.log("🏦  Horizon Bank RAG – Ingestion Pipeline\n");
-  console.log(`📂  Reading documents from: ${folderPath}\n`);
+  const folderPathArg = process.argv[2];
+  const folderPaths = folderPathArg
+    ? [folderPathArg]
+    : ["./docs", "./data/uploads"];
 
-  if (!fs.existsSync(folderPath)) {
-    console.error(`❌  Folder not found: ${folderPath}`);
+  console.log("🏦  Horizon Bank RAG – Ingestion Pipeline\n");
+  console.log(`📂  Reading documents from: ${folderPaths.join(", ")}\n`);
+
+  const missingFolders = folderPaths.filter((folderPath) => !fs.existsSync(folderPath));
+
+  if (folderPathArg && missingFolders.length > 0) {
+    console.error(`❌  Folder not found: ${folderPathArg}`);
     process.exit(1);
   }
 
-  const documents = await loadDocumentsFromFolder(folderPath);
+  const documents = [];
+  for (const folderPath of folderPaths) {
+    if (!fs.existsSync(folderPath)) {
+      console.log(`⚠️  Skipping missing folder: ${folderPath}`);
+      continue;
+    }
+
+    const loaded = await loadDocumentsFromFolder(folderPath);
+    documents.push(...loaded);
+  }
 
   if (documents.length === 0) {
-    console.log(`⚠️  No documents found. Place .pdf, .docx, or .txt files in the ${folderPath} folder.`);
+    console.log("⚠️  No documents found. Place .pdf, .docx, .txt, .md, or .csv files in ./docs or ./data/uploads.");
     return;
   }
 

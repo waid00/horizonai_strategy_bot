@@ -61,7 +61,18 @@ SELECT proname FROM pg_proc WHERE proname = 'match_documents';
 npm run ingest
 ```
 
-This script embeds all Horizon Bank strategy documents using OpenAI `text-embedding-3-small` and stores them in the `documents` table. Expected output:
+By default, this script now ingests from both runtime sources:
+
+- `./docs`
+- `./data/uploads`
+
+You can still ingest a custom folder only:
+
+```bash
+npm run ingest -- ./my-folder
+```
+
+The script embeds all documents using OpenAI `text-embedding-3-small` and stores them in the `documents` table. Expected output:
 
 ```
 ✅ Ingestion complete. All chunks embedded and stored.
@@ -84,6 +95,18 @@ npm run dev
 ```
 
 The app is available at [http://localhost:3000](http://localhost:3000).
+
+### 6. Upload and ingest from UI
+
+1. Open the app and switch to **Documents** mode.
+2. Upload files (`.pdf`, `.docx`, `.txt`, `.md`, `.csv`).
+3. Click **Run Ingest** to generate embeddings and write chunks to Supabase.
+
+API endpoints used by the UI:
+
+- `GET /api/upload` – list files from `docs` and `data/uploads`
+- `POST /api/upload` – upload files into `data/uploads`
+- `POST /api/ingest` – run ingest pipeline from both folders
 
 ---
 
@@ -172,9 +195,13 @@ horizonai_strategy_bot/
 ├── app/
 │   ├── api/
 │   │   ├── chat/route.ts      # RAG pipeline: embed → retrieve → stream
-│   │   └── health/route.ts    # Diagnostic endpoint
+│   │   ├── health/route.ts    # Diagnostic endpoint
+│   │   ├── upload/route.ts    # Upload + list runtime docs
+│   │   └── ingest/route.ts    # Trigger ingest from docs + uploads
 │   ├── layout.tsx
 │   └── page.tsx               # Chat UI
+├── data/
+│   └── uploads/               # Runtime user uploads (gitignored)
 ├── scripts/
 │   ├── ingest.mjs             # Embed and store documents in Supabase
 │   └── probe-rpc.mjs          # Test the full RAG retrieval pipeline

@@ -2,10 +2,12 @@
   "name": "horizon-bank-strategy-bot",
   "version": "1.0.0",
   "private": true,
+  "type": "module",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "test": "node --test",
     "lint": "next lint",
     "ingest": "node scripts/ingest.mjs",
     "probe": "node scripts/probe-rpc.mjs"
