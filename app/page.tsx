@@ -328,11 +328,8 @@ export default function HorizonBotPage() {
       <header className="header">
         <div className="header-inner">
           <div className="logo-block">
-            <span className="logo-mark">H</span>
-            <div>
-              <p className="logo-title">HORIZON BANK</p>
-              <p className="logo-sub">Strategy Intelligence System</p>
-            </div>
+            <span className="logo-title">Horizon<sup className="logo-ai">AI</sup></span>
+            <span className="logo-sub">bank</span>
           </div>
           <nav className="mode-toggle">
             <button
@@ -447,37 +444,48 @@ export default function HorizonBotPage() {
           </section>
         ) : (
           <>
+            {/* Sidebar + Chat Layout */}
+            <aside className="docs-sidebar">
+              <div className="sidebar-header">
+                <h2 className="sidebar-title">Active Documents</h2>
+                <button
+                  type="button"
+                  className="sidebar-toggle"
+                  onClick={() => setMode("documents")}
+                  title="Manage documents"
+                >
+                  +
+                </button>
+              </div>
+              {docsFiles.length === 0 ? (
+                <div className="sidebar-empty">
+                  <p>No documents loaded yet</p>
+                  <button
+                    type="button"
+                    className="sidebar-add"
+                    onClick={() => setMode("documents")}
+                  >
+                    Add documents
+                  </button>
+                </div>
+              ) : (
+                <ul className="sidebar-docs-list">
+                  {docsFiles.map((doc) => (
+                    <li key={doc.id} className="sidebar-doc-item">
+                      <span className="sidebar-doc-icon">{getDocIcon(doc.extension)}</span>
+                      <div className="sidebar-doc-info">
+                        <p className="sidebar-doc-name">{doc.originalName}</p>
+                        <p className="sidebar-doc-meta">{doc.location}</p>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </aside>
+
             {/* Message Thread */}
             <section className="chat-section">
-          <section className="slide-hero">
-            <h1 className="slide-title">Základní charakteristika banky</h1>
-            <p className="slide-mission">
-              Poslání: Být bankou, která díky datům a AI rozumí životní situaci klienta a proaktivně
-              mu pomáhá využívat finanční příležitosti ve správný čas.
-            </p>
-          </section>
-
-          <div className="working-docs-strip">
-            <div className="working-docs-title-wrap">
-              <p className="working-docs-title">Cílové segmenty dokumentů</p>
-              <p className="working-docs-subtitle">Dokumenty, se kterými aktuálně pracuje retrieval vrstva.</p>
-            </div>
-            <div className="working-docs-list">
-              {docsFiles.length === 0 ? (
-                <span className="working-docs-empty">No documents loaded yet.</span>
-              ) : (
-                docsFiles.map((doc) => (
-                  <article key={doc.id} className="working-doc-card">
-                    <span className="working-doc-icon">{getDocIcon(doc.extension)}</span>
-                    <h3>{doc.originalName}</h3>
-                    <p>{doc.location === "docs" ? "Core bank strategy source." : "Uploaded working source."}</p>
-                  </article>
-                ))
-              )}
-            </div>
-          </div>
-
-          <div className="messages-container">
+              <div className="messages-container">
             {messages.length === 0 && (
               <div className="empty-state">
                 <p className="empty-icon">◈</p>
@@ -827,40 +835,57 @@ export default function HorizonBotPage() {
         .header-inner {
           max-width: 1400px;
           margin: 0 auto;
-          height: 64px;
+          height: 72px;
           display: flex;
           align-items: center;
           justify-content: space-between;
         }
-        .logo-block { display: flex; align-items: center; gap: 0.875rem; }
-        .logo-mark {
-          width: 36px; height: 36px;
-          background: var(--accent);
-          color: #fff;
-          display: flex; align-items: center; justify-content: center;
-          font-weight: 700; font-size: 1.1rem;
-          border-radius: 4px;
+        .logo-block { display: flex; align-items: baseline; gap: 0.3rem; }
+        .logo-title { 
+          font-size: 1.1rem; 
+          font-weight: 700; 
+          letter-spacing: 0.02em; 
+          background: linear-gradient(135deg, #4F8CFF 0%, #818CF8 100%);
+          -webkit-background-clip: text;
+          -webkit-text-fill-color: transparent;
+          background-clip: text;
         }
-        .logo-title { font-size: 0.75rem; font-weight: 700; letter-spacing: 0.18em; color: var(--text-primary); }
-        .logo-sub { font-size: 0.65rem; color: var(--text-secondary); letter-spacing: 0.08em; }
+        .logo-ai {
+          font-size: 0.65rem;
+          font-weight: 700;
+          color: #4F8CFF;
+          vertical-align: super;
+          letter-spacing: 0.05em;
+        }
+        .logo-sub { 
+          font-size: 1.1rem; 
+          color: var(--text-primary); 
+          font-weight: 400;
+          letter-spacing: 0.02em;
+        }
 
         .mode-toggle { display: flex; gap: 0.5rem; }
         .mode-btn {
           background: transparent;
           border: 1px solid var(--line);
           color: var(--text-secondary);
-          padding: 0.35rem 1rem;
+          padding: 0.5rem 1.2rem;
           font-family: inherit;
-          font-size: 0.7rem;
-          letter-spacing: 0.1em;
+          font-size: 0.8rem;
+          letter-spacing: 0.02em;
           cursor: pointer;
-          border-radius: 3px;
-          transition: all 0.15s;
+          border-radius: 6px;
+          transition: all 0.2s;
+          font-weight: 500;
         }
-        .mode-btn.active, .mode-btn:hover {
+        .mode-btn.active {
           border-color: var(--accent);
           color: var(--accent);
-          background: var(--accent-soft);
+          background: rgba(79, 140, 255, 0.1);
+        }
+        .mode-btn:hover:not(.active) {
+          border-color: var(--accent);
+          color: var(--text-primary);
         }
 
         /* ── Main ────────────────────────────────────────────────────────── */
@@ -1408,122 +1433,166 @@ export default function HorizonBotPage() {
         }
 
         /* ── Chat Section ────────────────────────────────────────────────── */
+        .main {
+          flex: 1;
+          display: flex;
+          overflow: hidden;
+        }
+
+        .docs-sidebar {
+          width: 280px;
+          border-right: 1px solid var(--line);
+          background: var(--surface);
+          display: flex;
+          flex-direction: column;
+          overflow: hidden;
+          flex-shrink: 0;
+        }
+
+        .sidebar-header {
+          padding: 1.25rem 1rem;
+          border-bottom: 1px solid var(--line);
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 0.75rem;
+        }
+
+        .sidebar-title {
+          font-size: 0.85rem;
+          font-weight: 600;
+          color: var(--text-primary);
+          letter-spacing: 0.05em;
+          text-transform: uppercase;
+        }
+
+        .sidebar-toggle {
+          width: 32px;
+          height: 32px;
+          border-radius: 6px;
+          border: 1px solid var(--line);
+          background: var(--bg);
+          color: var(--text-secondary);
+          font-size: 1.2rem;
+          cursor: pointer;
+          transition: all 0.2s;
+        }
+
+        .sidebar-toggle:hover {
+          border-color: var(--accent);
+          color: var(--accent);
+        }
+
+        .sidebar-empty {
+          padding: 1.5rem 1rem;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          gap: 1rem;
+          flex: 1;
+        }
+
+        .sidebar-empty p {
+          font-size: 0.75rem;
+          color: var(--text-secondary);
+          text-align: center;
+        }
+
+        .sidebar-add {
+          padding: 0.5rem 1rem;
+          border: 1px solid var(--accent);
+          border-radius: 4px;
+          background: transparent;
+          color: var(--accent);
+          font-size: 0.75rem;
+          font-weight: 600;
+          letter-spacing: 0.05em;
+          cursor: pointer;
+          transition: all 0.2s;
+        }
+
+        .sidebar-add:hover {
+          background: rgba(79, 140, 255, 0.1);
+        }
+
+        .sidebar-docs-list {
+          list-style: none;
+          flex: 1;
+          overflow-y: auto;
+          padding: 0.5rem;
+          display: flex;
+          flex-direction: column;
+          gap: 0.5rem;
+        }
+
+        .sidebar-doc-item {
+          padding: 0.75rem;
+          border-radius: 6px;
+          background: var(--bg);
+          border: 1px solid var(--line);
+          display: flex;
+          align-items: flex-start;
+          gap: 0.6rem;
+          transition: all 0.2s;
+        }
+
+        .sidebar-doc-item:hover {
+          border-color: var(--accent);
+          background: rgba(79, 140, 255, 0.05);
+        }
+
+        .sidebar-doc-icon {
+          width: 24px;
+          height: 24px;
+          border-radius: 4px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          background: var(--accent-soft);
+          border: 1px solid rgba(79, 140, 255, 0.3);
+          font-size: 0.6rem;
+          font-weight: 700;
+          flex-shrink: 0;
+          color: var(--accent);
+        }
+
+        .sidebar-doc-info {
+          display: flex;
+          flex-direction: column;
+          gap: 0.2rem;
+          min-width: 0;
+        }
+
+        .sidebar-doc-name {
+          font-size: 0.7rem;
+          color: var(--text-primary);
+          font-weight: 600;
+          word-break: break-word;
+          line-height: 1.3;
+        }
+
+        .sidebar-doc-meta {
+          font-size: 0.6rem;
+          color: var(--text-secondary);
+          text-transform: uppercase;
+          letter-spacing: 0.03em;
+        }
+
         .chat-section {
           flex: 1;
           display: flex;
           flex-direction: column;
           overflow: hidden;
         }
-        .slide-hero {
-          position: relative;
-          border-bottom: 1px solid var(--line);
-          background:
-            radial-gradient(circle at 12% 20%, rgba(79, 140, 255, 0.22), transparent 48%),
-            radial-gradient(circle at 80% -15%, rgba(118, 186, 255, 0.16), transparent 42%),
-            linear-gradient(160deg, #0f1726 0%, #0b111b 100%);
-          padding: 1.6rem 1.8rem 1.4rem;
-          animation: heroReveal 0.45s ease-out;
-        }
-        .slide-title {
-          font-size: clamp(1.2rem, 2.3vw, 1.9rem);
-          line-height: 1.12;
-          letter-spacing: 0.01em;
-          color: #f8fbff;
-          max-width: 720px;
-        }
-        .slide-mission {
-          margin-top: 0.75rem;
-          max-width: 980px;
-          font-size: clamp(0.78rem, 1.15vw, 0.96rem);
-          color: #d5dcea;
-          line-height: 1.75;
-        }
-        .working-docs-strip {
-          border-bottom: 1px solid var(--line);
-          background: var(--surface);
-          padding: 0.95rem 1.25rem 1.1rem;
-          display: flex;
-          flex-direction: column;
-          gap: 0.65rem;
-        }
-        .working-docs-title-wrap {
-          display: flex;
-          flex-direction: column;
-          gap: 0.18rem;
-        }
-        .working-docs-title {
-          font-size: 0.7rem;
-          color: var(--text-primary);
-          letter-spacing: 0.13em;
-        }
-        .working-docs-subtitle {
-          font-size: 0.64rem;
-          color: var(--text-secondary);
-        }
-        .working-docs-list {
-          display: grid;
-          grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-          gap: 0.55rem;
-          max-height: 146px;
-          overflow-y: auto;
-        }
-        .working-doc-card {
-          border: 1px solid var(--line);
-          border-radius: 8px;
-          background: linear-gradient(170deg, #121b2c 0%, #111827 100%);
-          padding: 0.6rem 0.72rem;
-          display: grid;
-          grid-template-columns: 28px 1fr;
-          column-gap: 0.55rem;
-          row-gap: 0.15rem;
-          align-items: start;
-        }
-        .working-doc-icon {
-          grid-row: 1 / span 2;
-          width: 28px;
-          height: 28px;
-          border-radius: 6px;
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          background: var(--accent-soft);
-          border: 1px solid rgba(79, 140, 255, 0.35);
-          font-size: 0.9rem;
-        }
-        .working-doc-card h3 {
-          font-size: 0.68rem;
-          color: var(--text-primary);
-          line-height: 1.35;
-          font-weight: 700;
-          overflow: hidden;
-          text-overflow: ellipsis;
-          white-space: nowrap;
-        }
-        .working-doc-card p {
-          font-size: 0.62rem;
-          color: var(--text-secondary);
-          line-height: 1.35;
-        }
-        .working-doc-chip {
-          font-size: 0.62rem;
-          border: 1px solid var(--line);
-          color: var(--text-secondary);
-          border-radius: 999px;
-          padding: 0.2rem 0.55rem;
-          background: var(--bg);
-          max-width: 280px;
-          white-space: nowrap;
-          overflow: hidden;
-          text-overflow: ellipsis;
-        }
-        .working-docs-empty { font-size: 0.66rem; color: var(--text-secondary); }
+
         .messages-container {
           flex: 1;
           overflow-y: auto;
-          padding: 2rem;
+          padding: 2.5rem;
           display: flex;
           flex-direction: column;
-          gap: 1.5rem;
+          gap: 1.75rem;
         }
 
         /* ── Empty State ─────────────────────────────────────────────────── */
@@ -1534,45 +1603,78 @@ export default function HorizonBotPage() {
           display: flex;
           flex-direction: column;
           align-items: center;
-          gap: 1rem;
-          padding: 3rem 0;
+          gap: 1.5rem;
+          padding: 4rem 2rem;
         }
-        .empty-icon { font-size: 2.5rem; color: var(--accent); opacity: 0.8; }
-        .empty-title { font-size: 1.1rem; color: var(--text-primary); font-weight: 700; }
-        .empty-body { font-size: 0.8rem; color: var(--text-secondary); line-height: 1.7; }
-        .example-pills { display: flex; flex-wrap: wrap; gap: 0.5rem; justify-content: center; }
+        .empty-icon { 
+          font-size: 3rem; 
+          color: var(--accent); 
+          opacity: 0.6; 
+        }
+        .empty-title { 
+          font-size: 1.3rem; 
+          color: var(--text-primary); 
+          font-weight: 700;
+          letter-spacing: 0.01em;
+        }
+        .empty-body { 
+          font-size: 0.9rem; 
+          color: var(--text-secondary); 
+          line-height: 1.8;
+          max-width: 420px;
+        }
+        .example-pills { 
+          display: flex; 
+          flex-wrap: wrap; 
+          gap: 0.8rem; 
+          justify-content: center;
+          margin-top: 1rem;
+        }
         .pill {
           background: transparent;
           border: 1px solid var(--line);
           color: var(--text-secondary);
-          padding: 0.35rem 0.85rem;
+          padding: 0.5rem 1rem;
           font-family: inherit;
-          font-size: 0.65rem;
+          font-size: 0.8rem;
           cursor: pointer;
-          border-radius: 100px;
-          transition: all 0.15s;
-          letter-spacing: 0.05em;
+          border-radius: 8px;
+          transition: all 0.2s;
+          letter-spacing: 0.02em;
+          font-weight: 500;
         }
-        .pill:hover { border-color: var(--accent); color: var(--accent); }
+        .pill:hover { 
+          border-color: var(--accent); 
+          color: var(--accent);
+          background: rgba(79, 140, 255, 0.05);
+        }
 
         /* ── Messages ────────────────────────────────────────────────────── */
-        .message-row { display: flex; }
+        .message-row { 
+          display: flex; 
+          animation: fadeInUp 0.3s ease-out;
+        }
         .message-row.user { justify-content: flex-end; }
         .message-row.assistant { justify-content: flex-start; }
         .message-bubble {
-          max-width: 85%;
+          max-width: 80%;
           background: var(--surface);
           border: 1px solid var(--line);
-          border-radius: 6px;
-          padding: 1rem 1.25rem;
+          border-radius: 8px;
+          padding: 1.25rem 1.5rem;
         }
-        .message-row.user .message-bubble { border-color: var(--accent); background: var(--surface-soft); }
+        .message-row.user .message-bubble { 
+          background: rgba(79, 140, 255, 0.12);
+          border-color: var(--accent);
+        }
         .message-role {
           display: block;
-          font-size: 0.58rem;
-          letter-spacing: 0.18em;
+          font-size: 0.65rem;
+          letter-spacing: 0.08em;
           color: var(--text-secondary);
           margin-bottom: 0.5rem;
+          font-weight: 600;
+          text-transform: uppercase;
         }
         .message-row.user .message-role { color: var(--accent); }
 
@@ -1580,53 +1682,67 @@ export default function HorizonBotPage() {
         :global(.message-content table) {
           width: 100%;
           border-collapse: collapse;
-          font-size: 0.75rem;
-          margin-top: 0.5rem;
+          font-size: 0.85rem;
+          margin-top: 0.75rem;
         }
         :global(.message-content th) {
-          background: var(--surface-soft);
-          color: var(--accent);
+          background: rgba(79, 140, 255, 0.08);
+          color: var(--text-primary);
           text-align: left;
-          padding: 0.5rem 0.75rem;
-          font-size: 0.65rem;
-          letter-spacing: 0.1em;
-          border-bottom: 1px solid var(--line);
+          padding: 0.75rem 1rem;
+          font-size: 0.75rem;
+          letter-spacing: 0.05em;
+          border-bottom: 2px solid var(--line);
+          font-weight: 700;
         }
         :global(.message-content td) {
-          padding: 0.6rem 0.75rem;
+          padding: 0.75rem 1rem;
           border-bottom: 1px solid var(--line);
-          color: var(--text-primary);
-          line-height: 1.5;
+          color: var(--text-secondary);
+          line-height: 1.6;
           vertical-align: top;
         }
         :global(.message-content tr:last-child td) { border-bottom: none; }
-        :global(.message-content p) { font-size: 0.8rem; line-height: 1.7; }
+        :global(.message-content p) { 
+          font-size: 0.95rem; 
+          line-height: 1.75; 
+          color: var(--text-primary);
+          margin: 0.5rem 0;
+        }
         :global(.message-content code) {
-          background: var(--surface-soft);
-          padding: 0.1rem 0.3rem;
-          border-radius: 3px;
-          font-size: 0.75em;
+          background: rgba(79, 140, 255, 0.15);
+          color: var(--accent);
+          padding: 0.15rem 0.5rem;
+          border-radius: 4px;
+          font-size: 0.85em;
+          font-family: 'Monaco', 'Courier New', monospace;
         }
 
         /* Typing indicator */
-        .loading { opacity: 0.7; }
-        .typing-indicator { display: flex; gap: 4px; align-items: center; height: 20px; }
+        .loading { opacity: 0.8; }
+        .typing-indicator { 
+          display: flex; 
+          gap: 5px; 
+          align-items: center; 
+          height: 24px; 
+        }
         .typing-indicator span {
-          width: 5px; height: 5px;
+          width: 6px; 
+          height: 6px;
           background: var(--accent);
           border-radius: 50%;
-          animation: blink 1.2s infinite;
+          animation: blink 1.3s infinite;
         }
         .typing-indicator span:nth-child(2) { animation-delay: 0.2s; }
         .typing-indicator span:nth-child(3) { animation-delay: 0.4s; }
         @keyframes blink {
-          0%, 80%, 100% { opacity: 0.2; transform: scale(0.9); }
+          0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); }
           40% { opacity: 1; transform: scale(1); }
         }
-        @keyframes heroReveal {
+        @keyframes fadeInUp {
           from {
             opacity: 0;
-            transform: translateY(-8px);
+            transform: translateY(10px);
           }
           to {
             opacity: 1;
@@ -1637,53 +1753,73 @@ export default function HorizonBotPage() {
         /* ── Input Area ──────────────────────────────────────────────────── */
         .input-form {
           display: flex;
-          gap: 0.5rem;
-          padding: 1rem 2rem;
+          gap: 0.75rem;
+          padding: 1.75rem 2.5rem;
           border-top: 1px solid var(--line);
-          background: var(--surface);
+          background: var(--bg);
+          flex-shrink: 0;
         }
         .add-docs-btn {
           border: 1px solid var(--line);
-          background: var(--bg);
+          background: var(--surface);
           color: var(--text-secondary);
-          border-radius: 4px;
-          padding: 0 0.85rem;
-          font-size: 0.68rem;
+          border-radius: 6px;
+          padding: 0 1.25rem;
+          font-size: 0.8rem;
           letter-spacing: 0.05em;
           font-family: inherit;
           cursor: pointer;
           flex-shrink: 0;
+          transition: all 0.2s;
+          font-weight: 500;
         }
         .add-docs-btn:hover {
           border-color: var(--accent);
           color: var(--accent);
+          background: rgba(79, 140, 255, 0.05);
         }
         .chat-input {
           flex: 1;
-          background: var(--bg);
+          background: var(--surface);
           border: 1px solid var(--line);
-          border-radius: 4px;
+          border-radius: 6px;
           color: var(--text-primary);
           font-family: inherit;
-          font-size: 0.8rem;
-          padding: 0.75rem 1rem;
+          font-size: 0.95rem;
+          padding: 0.9rem 1.25rem;
+          transition: all 0.2s;
         }
-        .chat-input:focus { outline: none; border-color: var(--accent); }
+        .chat-input:focus { 
+          outline: none; 
+          border-color: var(--accent);
+          box-shadow: 0 0 0 2px rgba(79, 140, 255, 0.1);
+        }
         .chat-input::placeholder { color: var(--text-secondary); }
         .send-btn {
           background: var(--accent);
           border: none;
           color: white;
-          width: 44px;
-          height: 44px;
-          border-radius: 4px;
-          font-size: 1.1rem;
+          width: 48px;
+          height: 48px;
+          border-radius: 6px;
+          font-size: 1.2rem;
           cursor: pointer;
-          transition: background 0.15s;
+          transition: all 0.2s;
           flex-shrink: 0;
+          display: flex;
+          align-items: center;
+          justify-content: center;
         }
-        .send-btn:hover:not(:disabled) { filter: brightness(0.92); }
-        .send-btn:disabled { background: var(--line); cursor: not-allowed; }
+        .send-btn:hover:not(:disabled) { 
+          background: #6BA0FF;
+          transform: translateY(-2px);
+          box-shadow: 0 4px 12px rgba(79, 140, 255, 0.3);
+        }
+        .send-btn:disabled { 
+          background: var(--line);
+          cursor: not-allowed;
+          opacity: 0.5;
+        }
 
         /* ── Footer Disclaimer ───────────────────────────────────────────── */
         .disclaimer {
@@ -1710,25 +1846,22 @@ export default function HorizonBotPage() {
         }
 
         @media (max-width: 900px) {
-          .slide-hero {
-            padding: 1.15rem 1rem 1rem;
-          }
-          .working-docs-strip {
-            padding: 0.85rem 1rem 1rem;
-          }
-          .working-docs-list {
-            grid-template-columns: 1fr;
-            max-height: 170px;
+          .docs-sidebar {
+            width: 240px;
           }
           .messages-container {
-            padding: 1.2rem 1rem;
+            padding: 2rem 1.5rem;
           }
           .input-form {
-            padding: 0.8rem 1rem;
+            padding: 1.5rem 1.5rem;
+            gap: 0.6rem;
           }
         }
 
         @media (max-width: 640px) {
+          .docs-sidebar {
+            display: none;
+          }
           .header {
             padding: 0 0.8rem;
           }
@@ -1736,10 +1869,14 @@ export default function HorizonBotPage() {
             height: 70px;
           }
           .mode-btn {
-            padding: 0.32rem 0.72rem;
+            padding: 0.4rem 0.8rem;
+            font-size: 0.75rem;
           }
           .logo-sub {
             display: none;
+          }
+          .logo-title {
+            font-size: 1rem;
           }
           .docs-section {
             padding: 1rem 0.8rem;
@@ -1758,17 +1895,39 @@ export default function HorizonBotPage() {
             flex: 1;
             min-width: 130px;
           }
-          .slide-title {
-            font-size: 1.08rem;
+          .messages-container {
+            padding: 1.5rem 1rem;
           }
-          .slide-mission {
-            font-size: 0.76rem;
-            line-height: 1.65;
+          .input-form {
+            padding: 1rem 1rem;
+            gap: 0.5rem;
           }
-          .disclaimer {
-            padding: 0.45rem 0.9rem 0.65rem;
+          .add-docs-btn {
+            padding: 0 0.8rem;
+            font-size: 0.75rem;
           }
-        }
+          .chat-input {
+            font-size: 0.85rem;
+            padding: 0.75rem 1rem;
+          }
+          .send-btn {
+            width: 44px;
+            height: 44px;
+            font-size: 1.1rem;
+          }
+          .empty-title {
+            font-size: 1.15rem;
+          }
+          .empty-body {
+            font-size: 0.85rem;
+          }
+          .example-pills {
+            gap: 0.6rem;
+          }
+          .pill {
+            padding: 0.4rem 0.8rem;
+            font-size: 0.75rem;
+          }
       `}</style>
     </div>
   );
