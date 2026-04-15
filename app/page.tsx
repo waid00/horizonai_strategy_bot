@@ -1,13 +1,7 @@
 "use client";
 /**
- * Horizon Bank Strategy Bot – Main Chat UI
- * File: /app/page.tsx
- *
- * Features:
- *  - Standard chat mode (RAG Q&A)
- *  - Documents mode for uploads, ingest, and alignment checks
- *  - Streaming responses via Vercel AI SDK useChat
- *  - Renders markdown tables from LLM output
+ * Horizon Bank Strategy Bot – Main Chat UI (Redesigned)
+ * Modern chat interface similar to ChatGPT/Claude/Gemini
  */
 
 import { useState, useRef, useEffect } from "react";
@@ -115,9 +109,7 @@ export default function HorizonBotPage() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Vercel AI SDK useChat: manages messages, input, and streaming state
   const { messages, sendMessage, status, error } = useChat();
-
   const isLoading = status === "submitted" || status === "streaming";
 
   function getMessageText(
@@ -143,20 +135,16 @@ export default function HorizonBotPage() {
 
   async function refreshDocuments() {
     const res = await fetch("/api/upload", { method: "GET" });
-    if (!res.ok) {
-      throw new Error("Failed to fetch documents list.");
-    }
+    if (!res.ok) throw new Error("Failed to fetch documents list.");
 
     const data = await res.json();
     const uploads: ManagedDocument[] = Array.isArray(data.uploads) ? data.uploads : [];
     const docs: ManagedDocument[] = Array.isArray(data.docs) ? data.docs : [];
-
     setDocsFiles([...uploads, ...docs]);
   }
 
   async function parseApiResponse(res: Response) {
     const raw = await res.text();
-
     try {
       return JSON.parse(raw) as Record<string, unknown>;
     } catch {
@@ -170,25 +158,16 @@ export default function HorizonBotPage() {
 
   async function handleUploadSubmit() {
     if (pendingFiles.length === 0 || uploading) return;
-
     setDocsNotice(null);
     setUploading(true);
 
     try {
       const formData = new FormData();
-      for (const file of pendingFiles) {
-        formData.append("files", file);
-      }
+      for (const file of pendingFiles) formData.append("files", file);
 
-      const res = await fetch("/api/upload", {
-        method: "POST",
-        body: formData,
-      });
-
+      const res = await fetch("/api/upload", { method: "POST", body: formData });
       const payload = await parseApiResponse(res);
-      if (!res.ok) {
-        throw new Error(String(payload?.error ?? "Upload failed."));
-      }
+      if (!res.ok) throw new Error(String(payload?.error ?? "Upload failed."));
 
       const savedCount = Array.isArray(payload.saved) ? payload.saved.length : 0;
       const rejectedCount = Array.isArray(payload.rejected) ? payload.rejected.length : 0;
@@ -197,8 +176,7 @@ export default function HorizonBotPage() {
       if (fileInputRef.current) fileInputRef.current.value = "";
       await refreshDocuments();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Upload failed.";
-      setDocsNotice(msg);
+      setDocsNotice(err instanceof Error ? err.message : "Upload failed.");
     } finally {
       setUploading(false);
     }
@@ -206,7 +184,6 @@ export default function HorizonBotPage() {
 
   async function handleIngestSubmit() {
     if (ingesting) return;
-
     setIngesting(true);
     setDocsNotice(null);
     setIngestLogs([]);
@@ -214,19 +191,13 @@ export default function HorizonBotPage() {
     try {
       const res = await fetch("/api/ingest", { method: "POST" });
       const payload = await parseApiResponse(res);
-
-      if (!res.ok || payload?.ok === false) {
-        throw new Error(String(payload?.error ?? "Ingest failed."));
-      }
+      if (!res.ok || payload?.ok === false) throw new Error(String(payload?.error ?? "Ingest failed."));
 
       const logs = Array.isArray(payload.logs) ? payload.logs : [];
       setIngestLogs(logs);
-      setDocsNotice(
-        `Ingest complete: files ${payload.filesProcessed ?? 0}, chunks ${payload.chunksInserted ?? 0}.`
-      );
+      setDocsNotice(`Ingest complete: files ${payload.filesProcessed ?? 0}, chunks ${payload.chunksInserted ?? 0}.`);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Ingest failed.";
-      setDocsNotice(msg);
+      setDocsNotice(err instanceof Error ? err.message : "Ingest failed.");
     } finally {
       setIngesting(false);
     }
@@ -240,24 +211,18 @@ export default function HorizonBotPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ storedName }),
       });
-
       const payload = await parseApiResponse(res);
-      if (!res.ok) {
-        throw new Error(String(payload?.error ?? "Delete failed."));
-      }
+      if (!res.ok) throw new Error(String(payload?.error ?? "Delete failed."));
 
       setDocsNotice("Upload deleted.");
       await refreshDocuments();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Delete failed.";
-      setDocsNotice(msg);
+      setDocsNotice(err instanceof Error ? err.message : "Delete failed.");
     }
   }
 
   async function handleRunAlignmentCheck() {
-    if (!alignmentDocAId || !alignmentDocBId || alignmentDocAId === alignmentDocBId || alignmentLoading) {
-      return;
-    }
+    if (!alignmentDocAId || !alignmentDocBId || alignmentDocAId === alignmentDocBId || alignmentLoading) return;
 
     setAlignmentLoading(true);
     setAlignmentError(null);
@@ -269,11 +234,8 @@ export default function HorizonBotPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ docAId: alignmentDocAId, docBId: alignmentDocBId }),
       });
-
       const payload = await parseApiResponse(res);
-      if (!res.ok) {
-        throw new Error(String(payload?.error ?? "Alignment check failed."));
-      }
+      if (!res.ok) throw new Error(String(payload?.error ?? "Alignment check failed."));
 
       setAlignmentResult(payload as AlignmentResult);
     } catch (err) {
@@ -288,27 +250,21 @@ export default function HorizonBotPage() {
       setAlignmentDocAId((current) => current || docsFiles[0].id);
       setAlignmentDocBId((current) => current || docsFiles[1]?.id || docsFiles[0].id);
     }
-
     setAlignmentError(null);
     setAlignmentResult(null);
     setAlignmentOpen(true);
   }
 
-  // Auto-scroll to bottom on new message
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
   useEffect(() => {
-    refreshDocuments().catch(() => {
-      setDocsNotice("Unable to load document inventory.");
-    });
+    refreshDocuments().catch(() => setDocsNotice("Unable to load document inventory."));
   }, []);
 
   useEffect(() => {
-    if (!alignmentOpen || docsFiles.length === 0) {
-      return;
-    }
+    if (!alignmentOpen || docsFiles.length === 0) return;
 
     const firstDoc = docsFiles[0];
     const secondDoc = docsFiles[1] ?? docsFiles[0];
@@ -317,14 +273,13 @@ export default function HorizonBotPage() {
     setAlignmentDocBId((current) => {
       const currentIsValid = docsFiles.some((doc) => doc.id === current && doc.id !== alignmentDocAId);
       if (currentIsValid) return current;
-
       return docsFiles.find((doc) => doc.id !== alignmentDocAId)?.id ?? secondDoc.id;
     });
   }, [alignmentOpen, docsFiles, alignmentDocAId]);
 
   return (
     <div className="app-shell">
-      {/* ── Header ─────────────────────────────────────────────────────── */}
+      {/* Header */}
       <header className="header">
         <div className="header-inner">
           <div className="logo-block">
@@ -336,7 +291,7 @@ export default function HorizonBotPage() {
               className={`mode-btn ${mode === "chat" ? "active" : ""}`}
               onClick={() => setMode("chat")}
             >
-              Query Mode
+              Chat
             </button>
             <button
               className={`mode-btn ${mode === "documents" ? "active" : ""}`}
@@ -348,35 +303,40 @@ export default function HorizonBotPage() {
         </div>
       </header>
 
-      {/* ── Main Layout ─────────────────────────────────────────────────── */}
+      {/* Main Content */}
       <main className="main">
         {mode === "documents" ? (
           <section className="docs-section">
-            <div className="docs-toolbar">
-              <div className="docs-title-wrap">
-                <p className="docs-title">Document Runtime Store</p>
-                <p className="docs-subtitle">
-                  Upload .pdf, .docx, .txt, .md, .csv files and run ingest into Supabase embeddings.
-                </p>
+            <div className="docs-container">
+              <div className="docs-header">
+                <div>
+                  <h1 className="docs-title">Document Management</h1>
+                  <p className="docs-subtitle">
+                    Upload and manage your strategy documents
+                  </p>
+                </div>
+                <div className="docs-actions">
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    onClick={handleIngestSubmit}
+                    disabled={ingesting}
+                  >
+                    {ingesting ? "Ingesting..." : "Run Ingest"}
+                  </button>
+                  {docsFiles.length >= 2 && (
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      onClick={openAlignmentModal}
+                    >
+                      Check Alignment
+                    </button>
+                  )}
+                </div>
               </div>
 
-              <div className="docs-actions">
-                <button
-                  type="button"
-                  className="docs-btn primary"
-                  onClick={handleIngestSubmit}
-                  disabled={ingesting}
-                >
-                  {ingesting ? "Ingesting..." : "Run Ingest"}
-                </button>
-                <button
-                  type="button"
-                  className="docs-btn secondary"
-                  onClick={openAlignmentModal}
-                  disabled={docsFiles.length < 2}
-                >
-                  Is it aligned?
-                </button>
+              <div className="docs-upload-area">
                 <input
                   ref={fileInputRef}
                   type="file"
@@ -387,222 +347,208 @@ export default function HorizonBotPage() {
                 />
                 <button
                   type="button"
-                  className="docs-btn"
+                  className="btn-primary"
                   onClick={handleUploadSubmit}
                   disabled={uploading || pendingFiles.length === 0}
                 >
-                  {uploading ? "Uploading..." : `Upload (${pendingFiles.length})`}
+                  {uploading ? "Uploading..." : `Upload ${pendingFiles.length > 0 ? `(${pendingFiles.length})` : ''}`}
                 </button>
               </div>
-            </div>
 
-            {docsNotice && <div className="docs-notice">{docsNotice}</div>}
+              {docsNotice && <div className="docs-notice">{docsNotice}</div>}
 
-            <div className="docs-grid">
-              <div className="docs-card">
-                <p className="docs-card-title">Available files</p>
+              <div className="docs-grid">
                 {docsFiles.length === 0 ? (
-                  <p className="docs-empty">No documents found in docs or data/uploads.</p>
-                ) : (
-                  <div className="docs-segment-grid">
-                    {docsFiles.map((doc) => (
-                      <article key={doc.id} className="docs-segment-card">
-                        <div className="docs-segment-head">
-                          <span className="docs-segment-icon">{getDocIcon(doc.extension)}</span>
-                          {doc.location === "uploads" && (
-                            <button
-                              type="button"
-                              className="docs-delete-btn"
-                              onClick={() => void handleDeleteUpload(doc.storedName)}
-                              aria-label={`Delete ${doc.originalName}`}
-                              title="Delete upload"
-                            >
-                              X
-                            </button>
-                          )}
-                        </div>
-                        <p className="docs-segment-title">{doc.originalName}</p>
-                        <p className="docs-segment-body">
-                          {doc.location === "docs" ? "Base strategy source document." : "Runtime uploaded source document."}
-                        </p>
-                        <p className="docs-segment-meta">{doc.location} • {Math.max(1, Math.round(doc.size / 1024))} KB</p>
-                      </article>
-                    ))}
+                  <div className="docs-empty">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                      <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/>
+                      <polyline points="13 2 13 9 20 9"/>
+                    </svg>
+                    <p>No documents uploaded yet</p>
                   </div>
+                ) : (
+                  docsFiles.map((doc) => (
+                    <div key={doc.id} className="doc-card">
+                      <div className="doc-card-header">
+                        <span className="doc-icon">{getDocIcon(doc.extension)}</span>
+                        {doc.location === "uploads" && (
+                          <button
+                            type="button"
+                            className="doc-delete"
+                            onClick={() => void handleDeleteUpload(doc.storedName)}
+                            title="Delete"
+                          >
+                            ×
+                          </button>
+                        )}
+                      </div>
+                      <h3 className="doc-name">{doc.originalName}</h3>
+                      <p className="doc-meta">
+                        {doc.location} • {Math.max(1, Math.round(doc.size / 1024))} KB
+                      </p>
+                    </div>
+                  ))
                 )}
               </div>
 
-              <div className="docs-card">
-                <p className="docs-card-title">Ingest log</p>
-                {ingestLogs.length === 0 ? (
-                  <p className="docs-empty">Run ingest to see progress and summary.</p>
-                ) : (
-                  <pre className="docs-log">{ingestLogs.join("\n")}</pre>
+              {ingestLogs.length > 0 && (
+                <div className="docs-logs">
+                  <h3>Ingest Log</h3>
+                  <pre>{ingestLogs.join("\n")}</pre>
+                </div>
+              )}
+            </div>
+          </section>
+        ) : (
+          <section className="chat-section">
+            <div className="messages-wrapper">
+              <div className="messages-container">
+                {messages.length === 0 && (
+                  <div className="empty-state">
+                    <div className="empty-icon">
+                      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                        <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+                        <path d="M2 17l10 5 10-5"/>
+                        <path d="M2 12l10 5 10-5"/>
+                      </svg>
+                    </div>
+                    <h1 className="empty-title">Základní charakteristika banky</h1>
+                    <p className="empty-body">
+                      Poslání: Být bankou, která díky datům a AI rozumí životní situaci klienta a proaktivně 
+                      mu pomáhá využívat finanční příležitosti ve správný čas.
+                    </p>
+                  </div>
+                )}
+
+                {messages.map((msg) => (
+                  <div key={msg.id} className={`message ${msg.role}`}>
+                    <div className="message-avatar">
+                      {msg.role === "user" ? (
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+                          <circle cx="12" cy="7" r="4"/>
+                        </svg>
+                      ) : (
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+                          <path d="M2 17l10 5 10-5"/>
+                          <path d="M2 12l10 5 10-5"/>
+                        </svg>
+                      )}
+                    </div>
+                    <div className="message-content">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {getMessageText(msg)}
+                      </ReactMarkdown>
+                    </div>
+                  </div>
+                ))}
+
+                {isLoading && (
+                  <div className="message assistant">
+                    <div className="message-avatar">
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+                        <path d="M2 17l10 5 10-5"/>
+                        <path d="M2 12l10 5 10-5"/>
+                      </svg>
+                    </div>
+                    <div className="typing-indicator">
+                      <span />
+                      <span />
+                      <span />
+                    </div>
+                  </div>
+                )}
+
+                {error && (
+                  <div className="error-banner">
+                    ⚠ {error.message ?? "An error occurred. Please try again."}
+                  </div>
+                )}
+
+                <div ref={messagesEndRef} />
+              </div>
+            </div>
+
+            {/* Input Area */}
+            <div className="input-wrapper">
+              <div className="input-container">
+                <form className="input-form" onSubmit={handleFormSubmit}>
+                  <div className="input-actions">
+                    <button
+                      type="button"
+                      className="action-btn"
+                      onClick={() => setMode("documents")}
+                      title="Manage documents"
+                    >
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/>
+                        <polyline points="13 2 13 9 20 9"/>
+                      </svg>
+                    </button>
+                    {docsFiles.length >= 2 && (
+                      <button
+                        type="button"
+                        className="action-btn"
+                        onClick={openAlignmentModal}
+                        title="Check alignment"
+                      >
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                          <polyline points="14 2 14 8 20 8"/>
+                          <line x1="16" y1="13" x2="8" y2="13"/>
+                          <line x1="16" y1="17" x2="8" y2="17"/>
+                        </svg>
+                      </button>
+                    )}
+                  </div>
+                  <input
+                    className="chat-input"
+                    value={input}
+                    onChange={(e) => setInput(e.target.value)}
+                    placeholder="Ask about strategy, risk, data, technology..."
+                    disabled={isLoading}
+                  />
+                  <button
+                    type="submit"
+                    className="send-btn"
+                    disabled={isLoading || !input.trim()}
+                  >
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <line x1="22" y1="2" x2="11" y2="13"/>
+                      <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+                    </svg>
+                  </button>
+                </form>
+                {docsFiles.length > 0 && (
+                  <div className="active-docs-badge">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/>
+                      <polyline points="13 2 13 9 20 9"/>
+                    </svg>
+                    {docsFiles.length} document{docsFiles.length !== 1 ? 's' : ''} active
+                  </div>
                 )}
               </div>
             </div>
           </section>
-        ) : (
-          <>
-            {/* Sidebar + Chat Layout */}
-            <aside className="docs-sidebar">
-              <div className="sidebar-header">
-                <h2 className="sidebar-title">Active Documents</h2>
-                <button
-                  type="button"
-                  className="sidebar-toggle"
-                  onClick={() => setMode("documents")}
-                  title="Manage documents"
-                >
-                  +
-                </button>
-              </div>
-              {docsFiles.length === 0 ? (
-                <div className="sidebar-empty">
-                  <p>No documents loaded yet</p>
-                  <button
-                    type="button"
-                    className="sidebar-add"
-                    onClick={() => setMode("documents")}
-                  >
-                    Add documents
-                  </button>
-                </div>
-              ) : (
-                <ul className="sidebar-docs-list">
-                  {docsFiles.map((doc) => (
-                    <li key={doc.id} className="sidebar-doc-item">
-                      <span className="sidebar-doc-icon">{getDocIcon(doc.extension)}</span>
-                      <div className="sidebar-doc-info">
-                        <p className="sidebar-doc-name">{doc.originalName}</p>
-                        <p className="sidebar-doc-meta">{doc.location}</p>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </aside>
-
-            {/* Message Thread */}
-            <section className="chat-section">
-              <div className="messages-container">
-            {messages.length === 0 && (
-              <div className="empty-state">
-                <p className="empty-icon">◈</p>
-                <p className="empty-title">Strategy Intelligence Ready</p>
-                <p className="empty-body">
-                  Ask any question about Horizon Bank's strategy, architecture, or compliance posture.
-                </p>
-                <div className="example-pills">
-                  {[
-                    "What is the cloud migration target?",
-                    "Explain the data mesh architecture.",
-                    "What is the NPS target for 2026?",
-                    "Summarise DORA compliance status.",
-                  ].map((q) => (
-                    <button
-                      key={q}
-                      className="pill"
-                      onClick={() => {
-                        setInput(q);
-                      }}
-                    >
-                      {q}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {messages.map((msg) => (
-              <div
-                key={msg.id}
-                className={`message-row ${msg.role === "user" ? "user" : "assistant"}`}
-              >
-                <div className="message-bubble">
-                  <span className="message-role">
-                    {msg.role === "user" ? "YOU" : "HORIZON AI"}
-                  </span>
-                  <div className="message-content">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                      {getMessageText(msg)}
-                    </ReactMarkdown>
-                  </div>
-                </div>
-              </div>
-            ))}
-
-            {isLoading && (
-              <div className="message-row assistant">
-                <div className="message-bubble loading">
-                  <span className="message-role">HORIZON AI</span>
-                  <div className="typing-indicator">
-                    <span />
-                    <span />
-                    <span />
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {error && (
-              <div className="error-banner">
-                ⚠ {error.message ?? "An error occurred. Please try again."}
-              </div>
-            )}
-
-            <div ref={messagesEndRef} />
-          </div>
-
-          {/* Input Area */}
-          <form className="input-form" onSubmit={handleFormSubmit}>
-            <button
-              type="button"
-              className="add-docs-btn"
-              onClick={() => setMode("documents")}
-            >
-              Add documents
-            </button>
-            <input
-              className="chat-input"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder="Ask if one document aligns with another, or ask about strategy, risk, data, technology…"
-              disabled={isLoading}
-            />
-            <button
-              type="submit"
-              className="send-btn"
-              disabled={isLoading || !input.trim()}
-            >
-              {isLoading ? "…" : "→"}
-            </button>
-          </form>
-
-          <p className="disclaimer">
-            Responses are generated exclusively from Horizon Bank internal documents.
-            Not for external distribution.{" "}
-            <a href="/api/health" target="_blank" rel="noopener" className="health-link">
-              System diagnostics →
-            </a>
-          </p>
-            </section>
-          </>
         )}
       </main>
 
+      {/* Alignment Modal - keeping the same from original */}
       {alignmentOpen && (
         <div className="alignment-modal-overlay" onClick={() => setAlignmentOpen(false)}>
           <div className="alignment-modal" onClick={(e) => e.stopPropagation()}>
             <div className="alignment-modal-header">
               <div>
-                <p className="alignment-title">Is it aligned?</p>
+                <p className="alignment-title">Document Alignment Check</p>
                 <p className="alignment-subtitle">
-                  Compare two existing documents using grounded chunk-level evidence only.
+                  Compare two documents using chunk-level evidence
                 </p>
               </div>
               <button type="button" className="alignment-close" onClick={() => setAlignmentOpen(false)}>
-                Close
+                ×
               </button>
             </div>
 
@@ -610,7 +556,7 @@ export default function HorizonBotPage() {
               <div className="alignment-selectors">
                 <div className="alignment-picker">
                   <div className="alignment-picker-header">
-                    <label className="alignment-label">Select Doc A</label>
+                    <label className="alignment-label">Document A</label>
                     {alignmentDocAId && (
                       <span className="alignment-selected-pill">
                         {docsFiles.find((doc) => doc.id === alignmentDocAId)?.originalName ?? alignmentDocAId}
@@ -621,7 +567,7 @@ export default function HorizonBotPage() {
                     className="alignment-search"
                     value={alignmentQueryA}
                     onChange={(e) => setAlignmentQueryA(e.target.value)}
-                    placeholder="Search docs..."
+                    placeholder="Search documents..."
                   />
                   <div className="alignment-doc-list">
                     {docsFiles
@@ -642,7 +588,7 @@ export default function HorizonBotPage() {
 
                 <div className="alignment-picker">
                   <div className="alignment-picker-header">
-                    <label className="alignment-label">Select Doc B</label>
+                    <label className="alignment-label">Document B</label>
                     {alignmentDocBId && (
                       <span className="alignment-selected-pill">
                         {docsFiles.find((doc) => doc.id === alignmentDocBId)?.originalName ?? alignmentDocBId}
@@ -653,7 +599,7 @@ export default function HorizonBotPage() {
                     className="alignment-search"
                     value={alignmentQueryB}
                     onChange={(e) => setAlignmentQueryB(e.target.value)}
-                    placeholder="Search docs..."
+                    placeholder="Search documents..."
                   />
                   <div className="alignment-doc-list">
                     {docsFiles
@@ -674,126 +620,30 @@ export default function HorizonBotPage() {
               </div>
 
               <div className="alignment-results">
-                <div className="alignment-actions-row">
-                  <button
-                    type="button"
-                    className="docs-btn primary"
-                    onClick={handleRunAlignmentCheck}
-                    disabled={alignmentLoading || !alignmentDocAId || !alignmentDocBId || alignmentDocAId === alignmentDocBId}
-                  >
-                    {alignmentLoading ? "Checking..." : "Run alignment check"}
-                  </button>
-                  {alignmentDocAId === alignmentDocBId && (
-                    <span className="alignment-note">Pick two different documents.</span>
-                  )}
-                </div>
+                <button
+                  type="button"
+                  className="btn-primary"
+                  onClick={handleRunAlignmentCheck}
+                  disabled={alignmentLoading || !alignmentDocAId || !alignmentDocBId || alignmentDocAId === alignmentDocBId}
+                >
+                  {alignmentLoading ? "Checking..." : "Run Alignment Check"}
+                </button>
 
-                {alignmentError && <div className="docs-notice">{alignmentError}</div>}
+                {alignmentError && <div className="error-banner">{alignmentError}</div>}
 
-                {alignmentResult ? (
-                  <>
-                    <div className="alignment-summary-card">
-                      <div className="alignment-verdict-row">
-                        <span className={`alignment-verdict alignment-verdict-${alignmentResult.verdict}`}>
-                          {formatAlignmentVerdict(alignmentResult.verdict)}
-                        </span>
-                        <span className="alignment-confidence">
-                          Confidence {Math.round(alignmentResult.confidence * 100)}%
-                        </span>
-                      </div>
-
-                      <div className="alignment-metrics">
-                        <div><strong>Top score</strong><span>{alignmentResult.similarity.top.toFixed(3)}</span></div>
-                        <div><strong>Avg top-k</strong><span>{alignmentResult.similarity.avgTopK.toFixed(3)}</span></div>
-                        <div><strong>k</strong><span>{alignmentResult.similarity.k}</span></div>
-                        <div><strong>Coverage</strong><span>{Math.round((alignmentResult.coverage?.supportedRatio ?? 0) * 100)}%</span></div>
-                      </div>
-
-                      {alignmentResult.llm_summary && (
-                        <p className="alignment-summary-text">{alignmentResult.llm_summary}</p>
-                      )}
-
-                      {alignmentResult.warnings?.length ? (
-                        <div className="alignment-warnings">
-                          {alignmentResult.warnings.map((warning) => (
-                            <p key={warning}>{warning}</p>
-                          ))}
-                        </div>
-                      ) : null}
+                {alignmentResult && (
+                  <div className="alignment-result-card">
+                    <div className="alignment-verdict-row">
+                      <span className={`alignment-verdict alignment-verdict-${alignmentResult.verdict}`}>
+                        {formatAlignmentVerdict(alignmentResult.verdict)}
+                      </span>
+                      <span className="alignment-confidence">
+                        {Math.round(alignmentResult.confidence * 100)}% confidence
+                      </span>
                     </div>
-
-                    <div className="alignment-evidence-card">
-                      <p className="alignment-section-title">Evidence</p>
-                      <div className="alignment-evidence-list">
-                        {alignmentResult.evidence.length === 0 ? (
-                          <p className="alignment-empty">No evidence pairs returned.</p>
-                        ) : (
-                          alignmentResult.evidence.map((pair) => (
-                            <div key={`${pair.aChunkId}-${pair.bChunkId}`} className="alignment-evidence-item">
-                              <div className="alignment-evidence-head">
-                                <span>{pair.aDocName ?? alignmentDocAId} chunk {pair.aChunkIndex ?? "?"}</span>
-                                <span>vs</span>
-                                <span>{pair.bDocName ?? alignmentDocBId} chunk {pair.bChunkIndex ?? "?"}</span>
-                                <span className="alignment-score">{pair.score.toFixed(3)}</span>
-                              </div>
-                              <div className="alignment-quotes">
-                                <blockquote>
-                                  <strong>A:</strong> {pair.aText}
-                                </blockquote>
-                                <blockquote>
-                                  <strong>B:</strong> {pair.bText}
-                                </blockquote>
-                              </div>
-                              <div className="alignment-chunk-ids">
-                                <span>{pair.aChunkId}</span>
-                                <span>{pair.bChunkId}</span>
-                              </div>
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="alignment-evidence-card">
-                      <p className="alignment-section-title">Reasons</p>
-                      {alignmentResult.reasons?.length ? (
-                        <ul className="alignment-reasons">
-                          {alignmentResult.reasons.map((reason, index) => (
-                            <li key={`${reason.text}-${index}`}>
-                              <span>{reason.text}</span>
-                              <small>{reason.citations.join(", ")}</small>
-                            </li>
-                          ))}
-                        </ul>
-                      ) : (
-                        <p className="alignment-empty">No structured reasons were returned.</p>
-                      )}
-                    </div>
-
-                    <div className="alignment-evidence-card">
-                      <p className="alignment-section-title">Contradictions</p>
-                      {alignmentResult.contradictions.length ? (
-                        <div className="alignment-contradictions">
-                          {alignmentResult.contradictions.map((contradiction) => (
-                            <div key={`${contradiction.aChunkId}-${contradiction.bChunkId}`} className="alignment-contradiction-item">
-                              <p>{contradiction.explanation}</p>
-                              <blockquote>A: {contradiction.aQuote}</blockquote>
-                              <blockquote>B: {contradiction.bQuote}</blockquote>
-                              <div className="alignment-chunk-ids">
-                                <span>{contradiction.aChunkId}</span>
-                                <span>{contradiction.bChunkId}</span>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      ) : (
-                        <p className="alignment-empty">No contradictions were identified in the provided evidence.</p>
-                      )}
-                    </div>
-                  </>
-                ) : (
-                  <div className="alignment-empty-state">
-                    Run the check to see similarity metrics, evidence pairs, and a grounded verdict.
+                    {alignmentResult.llm_summary && (
+                      <p className="alignment-summary">{alignmentResult.llm_summary}</p>
+                    )}
                   </div>
                 )}
               </div>
@@ -803,782 +653,129 @@ export default function HorizonBotPage() {
       )}
 
       <style jsx>{`
-        /* ── Design System ──────────────────────────────────────────────── */
+        /* Design System */
         :global(:root) {
           --bg: #0B0F17;
-          --surface: #111827;
-          --surface-soft: #0f1725;
+          --surface: #1F2937;
+          --surface-hover: #374151;
           --text-primary: #FFFFFF;
           --text-secondary: #9CA3AF;
-          --line: #1F2937;
+          --text-tertiary: #6B7280;
+          --border: #1F2937;
           --accent: #4F8CFF;
-          --accent-soft: rgba(79, 140, 255, 0.14);
+          --accent-hover: #6BA0FF;
         }
-        :global(*) { box-sizing: border-box; margin: 0; padding: 0; }
+
+        :global(*) { 
+          box-sizing: border-box; 
+          margin: 0; 
+          padding: 0; 
+        }
+
         :global(body) {
-          font-family: 'Manrope', sans-serif;
+          font-family: 'Manrope', -apple-system, BlinkMacSystemFont, sans-serif;
           background: var(--bg);
           color: var(--text-primary);
-          min-height: 100vh;
+          -webkit-font-smoothing: antialiased;
         }
 
-        /* ── App Shell ──────────────────────────────────────────────────── */
-        .app-shell { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+        /* App Shell */
+        .app-shell {
+          display: flex;
+          flex-direction: column;
+          height: 100vh;
+          overflow: hidden;
+        }
 
-        /* ── Header ─────────────────────────────────────────────────────── */
+        /* Header */
         .header {
           background: var(--bg);
-          border-bottom: 1px solid var(--line);
-          padding: 0 2rem;
+          border-bottom: 1px solid var(--border);
+          padding: 0 1rem;
           flex-shrink: 0;
         }
+
         .header-inner {
-          max-width: 1400px;
+          max-width: 1280px;
           margin: 0 auto;
-          height: 72px;
+          height: 60px;
           display: flex;
           align-items: center;
           justify-content: space-between;
         }
-        .logo-block { display: flex; align-items: baseline; gap: 0.3rem; }
-        .logo-title { 
-          font-size: 1.1rem; 
-          font-weight: 700; 
-          letter-spacing: 0.02em; 
-          background: linear-gradient(135deg, #4F8CFF 0%, #818CF8 100%);
+
+        .logo-block {
+          display: flex;
+          align-items: baseline;
+          gap: 0.25rem;
+        }
+
+        .logo-title {
+          font-size: 1.1rem;
+          font-weight: 700;
+          display: inline-block;
+          background: linear-gradient(to bottom, #a6b8ec 0%, #e2e7f8 100%);
           -webkit-background-clip: text;
           -webkit-text-fill-color: transparent;
           background-clip: text;
+          color: #a6b8ec;
         }
+
         .logo-ai {
           font-size: 0.65rem;
           font-weight: 700;
-          color: #4F8CFF;
-          vertical-align: super;
-          letter-spacing: 0.05em;
-        }
-        .logo-sub { 
-          font-size: 1.1rem; 
-          color: var(--text-primary); 
-          font-weight: 400;
-          letter-spacing: 0.02em;
+          background: linear-gradient(to bottom, #a6b8ec 0%, #e2e7f8 100%);
+          -webkit-background-clip: text;
+          -webkit-text-fill-color: transparent;
+          background-clip: text;
+          color: #a6b8ec;
         }
 
-        .mode-toggle { display: flex; gap: 0.5rem; }
+        .logo-sub {
+          font-size: 1.1rem;
+          font-weight: 700;
+          background: linear-gradient(to bottom, #a6b8ec 0%, #e2e7f8 100%);
+          -webkit-background-clip: text;
+          -webkit-text-fill-color: transparent;
+          background-clip: text;
+          color: #a6b8ec;
+        }
+
+        .mode-toggle {
+          display: flex;
+          gap: 0.5rem;
+        }
+
         .mode-btn {
           background: transparent;
-          border: 1px solid var(--line);
+          border: 1px solid transparent;
           color: var(--text-secondary);
-          padding: 0.5rem 1.2rem;
+          padding: 0.5rem 1rem;
           font-family: inherit;
-          font-size: 0.8rem;
-          letter-spacing: 0.02em;
+          font-size: 0.875rem;
           cursor: pointer;
           border-radius: 6px;
           transition: all 0.2s;
           font-weight: 500;
         }
+
+        .mode-btn:hover {
+          background: var(--surface);
+        }
+
         .mode-btn.active {
-          border-color: var(--accent);
-          color: var(--accent);
-          background: rgba(79, 140, 255, 0.1);
-        }
-        .mode-btn:hover:not(.active) {
-          border-color: var(--accent);
           color: var(--text-primary);
+          background: var(--surface);
         }
 
-        /* ── Main ────────────────────────────────────────────────────────── */
+        /* Main */
         .main {
           flex: 1;
-          display: flex;
           overflow: hidden;
-          max-width: 1400px;
-          width: 100%;
-          margin: 0 auto;
+          display: flex;
         }
 
-        .docs-section {
-          flex: 1;
-          display: flex;
-          flex-direction: column;
-          gap: 1rem;
-          padding: 1.5rem 2rem;
-          overflow: auto;
-        }
-        .docs-toolbar {
-          display: flex;
-          justify-content: space-between;
-          gap: 1rem;
-          flex-wrap: wrap;
-          border: 1px solid var(--line);
-          background: var(--surface);
-          border-radius: 6px;
-          padding: 1rem;
-        }
-        .docs-title { font-size: 0.95rem; color: var(--text-primary); letter-spacing: 0.03em; font-weight: 700; }
-        .docs-subtitle { font-size: 0.74rem; color: var(--text-secondary); margin-top: 0.35rem; }
-        .docs-actions { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
-        .file-input {
-          background: var(--bg);
-          border: 1px solid var(--line);
-          color: var(--text-primary);
-          padding: 0.45rem 0.6rem;
-          border-radius: 4px;
-          font-size: 0.7rem;
-          max-width: 360px;
-        }
-        .docs-btn {
-          background: transparent;
-          border: 1px solid var(--accent);
-          color: var(--accent);
-          border-radius: 4px;
-          padding: 0.55rem 0.9rem;
-          font-family: inherit;
-          font-size: 0.68rem;
-          letter-spacing: 0.08em;
-          cursor: pointer;
-        }
-        .docs-btn.secondary {
-          border-color: var(--line);
-          color: var(--text-secondary);
-          background: var(--surface-soft);
-        }
-        .docs-btn.secondary:hover:not(:disabled) {
-          border-color: var(--accent);
-          color: var(--accent);
-        }
-        .docs-btn.primary { background: var(--accent); color: #fff; }
-        .docs-btn:disabled { opacity: 0.45; cursor: not-allowed; }
-        .docs-notice {
-          border: 1px solid var(--line);
-          background: var(--surface);
-          color: var(--text-primary);
-          padding: 0.8rem 1rem;
-          border-radius: 4px;
-          font-size: 0.72rem;
-        }
-        .docs-grid {
-          display: grid;
-          grid-template-columns: 1fr 1fr;
-          gap: 1rem;
-          min-height: 0;
-        }
-        .docs-card {
-          border: 1px solid var(--line);
-          background: var(--surface);
-          border-radius: 6px;
-          padding: 1rem;
-          min-height: 320px;
-          display: flex;
-          flex-direction: column;
-          overflow: hidden;
-        }
-        .docs-card-title {
-          font-size: 0.7rem;
-          color: var(--text-secondary);
-          letter-spacing: 0.1em;
-          margin-bottom: 0.9rem;
-        }
-        .docs-empty { font-size: 0.72rem; color: var(--text-secondary); }
-        .docs-list {
-          list-style: none;
-          display: flex;
-          flex-direction: column;
-          gap: 0.55rem;
-          overflow: auto;
-        }
-        .docs-list-item {
-          border: 1px solid var(--line);
-          border-radius: 4px;
-          padding: 0.6rem 0.7rem;
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          gap: 0.75rem;
-        }
-        .docs-right {
-          display: inline-flex;
-          align-items: center;
-          gap: 0.5rem;
-          flex-shrink: 0;
-        }
-        .docs-name {
-          font-size: 0.72rem;
-          color: var(--text-primary);
-          word-break: break-all;
-        }
-        .docs-segment-grid {
-          display: grid;
-          grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-          gap: 0.8rem;
-          overflow: auto;
-          padding-right: 0.2rem;
-        }
-        .docs-segment-card {
-          border: 1px solid var(--line);
-          background: linear-gradient(165deg, #101a2a 0%, #0f1725 100%);
-          border-radius: 8px;
-          padding: 0.85rem;
-          display: flex;
-          flex-direction: column;
-          gap: 0.45rem;
-          min-height: 145px;
-        }
-        .docs-segment-head {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 0.6rem;
-        }
-        .docs-segment-icon {
-          width: 28px;
-          height: 28px;
-          border-radius: 7px;
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          background: var(--accent-soft);
-          border: 1px solid rgba(79, 140, 255, 0.35);
-          font-size: 0.95rem;
-        }
-        .docs-segment-title {
-          font-size: 0.76rem;
-          color: var(--text-primary);
-          line-height: 1.45;
-          font-weight: 700;
-          word-break: break-word;
-        }
-        .docs-segment-body {
-          font-size: 0.67rem;
-          color: var(--text-secondary);
-          line-height: 1.5;
-          min-height: 2.1em;
-        }
-        .docs-segment-meta {
-          margin-top: auto;
-          font-size: 0.62rem;
-          color: var(--accent);
-          letter-spacing: 0.05em;
-          text-transform: uppercase;
-        }
-        .docs-meta {
-          font-size: 0.65rem;
-          color: var(--text-secondary);
-          flex-shrink: 0;
-        }
-        .docs-delete-btn {
-          width: 22px;
-          height: 22px;
-          border-radius: 999px;
-          border: 1px solid #7f1d1d;
-          background: rgba(127, 29, 29, 0.2);
-          color: #fca5a5;
-          font-family: inherit;
-          font-size: 0.6rem;
-          line-height: 1;
-          cursor: pointer;
-        }
-        .docs-delete-btn:hover {
-          background: rgba(185, 28, 28, 0.28);
-          border-color: #b91c1c;
-          color: #fecaca;
-        }
-        .docs-log {
-          font-size: 0.68rem;
-          color: var(--text-primary);
-          background: var(--bg);
-          border: 1px solid var(--line);
-          border-radius: 4px;
-          padding: 0.75rem;
-          line-height: 1.5;
-          overflow: auto;
-          white-space: pre-wrap;
-          flex: 1;
-        }
-
-        @media (max-width: 960px) {
-          .docs-grid {
-            grid-template-columns: 1fr;
-          }
-          .docs-segment-grid {
-            grid-template-columns: 1fr;
-          }
-        }
-
-        /* ── Alignment Modal ───────────────────────────────────────────── */
-        .alignment-modal-overlay {
-          position: fixed;
-          inset: 0;
-          background: rgba(3, 8, 18, 0.82);
-          backdrop-filter: blur(8px);
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          padding: 1.25rem;
-          z-index: 60;
-        }
-        .alignment-modal {
-          width: min(1180px, 100%);
-          max-height: 92vh;
-          background: #0d1117;
-          border: 1px solid #1e2530;
-          border-radius: 16px;
-          box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
-          display: flex;
-          flex-direction: column;
-          overflow: hidden;
-        }
-        .alignment-modal-header {
-          padding: 1rem 1.25rem;
-          border-bottom: 1px solid #1e2530;
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 1rem;
-        }
-        .alignment-title { font-size: 0.95rem; color: #e2e8f0; letter-spacing: 0.08em; }
-        .alignment-subtitle { font-size: 0.68rem; color: #718096; margin-top: 0.25rem; }
-        .alignment-close {
-          border: 1px solid #233048;
-          background: #0a1322;
-          color: #9ab4db;
-          border-radius: 999px;
-          padding: 0.5rem 0.85rem;
-          font-family: inherit;
-          cursor: pointer;
-          font-size: 0.7rem;
-        }
-        .alignment-close:hover { border-color: #1a6ef5; color: #1a6ef5; }
-        .alignment-modal-body {
-          display: grid;
-          grid-template-columns: minmax(320px, 380px) 1fr;
-          gap: 1rem;
-          padding: 1rem;
-          min-height: 0;
-          overflow: hidden;
-        }
-        .alignment-selectors {
-          display: grid;
-          gap: 1rem;
-          min-height: 0;
-        }
-        .alignment-picker {
-          display: flex;
-          flex-direction: column;
-          gap: 0.6rem;
-          min-height: 0;
-          border: 1px solid #1e2530;
-          border-radius: 12px;
-          background: #0a0c10;
-          padding: 0.9rem;
-        }
-        .alignment-picker-header {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 0.75rem;
-        }
-        .alignment-label {
-          font-size: 0.68rem;
-          letter-spacing: 0.12em;
-          color: #9fb1cc;
-          text-transform: uppercase;
-        }
-        .alignment-selected-pill {
-          font-size: 0.62rem;
-          color: #9ab4db;
-          border: 1px solid #233048;
-          background: rgba(10, 19, 34, 0.8);
-          border-radius: 999px;
-          padding: 0.2rem 0.5rem;
-          white-space: nowrap;
-          overflow: hidden;
-          text-overflow: ellipsis;
-          max-width: 190px;
-        }
-        .alignment-search {
-          background: #0d1117;
-          border: 1px solid #1e2530;
-          border-radius: 8px;
-          color: #c8d0dc;
-          padding: 0.7rem 0.8rem;
-          font-family: inherit;
-          font-size: 0.72rem;
-        }
-        .alignment-search:focus { outline: none; border-color: #1a6ef5; }
-        .alignment-doc-list {
-          display: flex;
-          flex-direction: column;
-          gap: 0.45rem;
-          overflow: auto;
-          max-height: 220px;
-          padding-right: 0.15rem;
-        }
-        .alignment-doc-item {
-          border: 1px solid #1e2530;
-          background: #0d1117;
-          color: #c8d0dc;
-          border-radius: 10px;
-          padding: 0.72rem 0.8rem;
-          display: flex;
-          flex-direction: column;
-          align-items: flex-start;
-          gap: 0.25rem;
-          cursor: pointer;
-          text-align: left;
-        }
-        .alignment-doc-item:hover { border-color: #1a6ef5; }
-        .alignment-doc-item.active {
-          border-color: #1a6ef5;
-          background: rgba(26, 110, 245, 0.08);
-        }
-        .alignment-doc-name {
-          font-size: 0.72rem;
-          color: #e2e8f0;
-          word-break: break-all;
-        }
-        .alignment-doc-meta {
-          font-size: 0.6rem;
-          color: #718096;
-          text-transform: uppercase;
-          letter-spacing: 0.08em;
-        }
-        .alignment-results {
-          display: flex;
-          flex-direction: column;
-          gap: 0.85rem;
-          min-height: 0;
-          overflow: auto;
-          padding-right: 0.15rem;
-        }
-        .alignment-actions-row {
-          display: flex;
-          align-items: center;
-          gap: 0.75rem;
-          flex-wrap: wrap;
-        }
-        .alignment-note {
-          font-size: 0.68rem;
-          color: #718096;
-        }
-        .alignment-summary-card,
-        .alignment-evidence-card {
-          border: 1px solid #1e2530;
-          border-radius: 12px;
-          background: #0a0c10;
-          padding: 0.95rem;
-        }
-        .alignment-verdict-row {
-          display: flex;
-          align-items: center;
-          gap: 0.75rem;
-          flex-wrap: wrap;
-          margin-bottom: 0.75rem;
-        }
-        .alignment-verdict,
-        .alignment-confidence {
-          border-radius: 999px;
-          padding: 0.28rem 0.65rem;
-          font-size: 0.68rem;
-          letter-spacing: 0.05em;
-        }
-        .alignment-verdict { border: 1px solid transparent; text-transform: uppercase; }
-        .alignment-verdict-aligned { color: #86efac; border-color: rgba(34, 197, 94, 0.35); background: rgba(22, 101, 52, 0.2); }
-        .alignment-verdict-partial { color: #fde68a; border-color: rgba(202, 138, 4, 0.35); background: rgba(113, 63, 18, 0.2); }
-        .alignment-verdict-not_aligned { color: #fca5a5; border-color: rgba(239, 68, 68, 0.35); background: rgba(127, 29, 29, 0.2); }
-        .alignment-verdict-insufficient_evidence { color: #c4b5fd; border-color: rgba(139, 92, 246, 0.35); background: rgba(91, 33, 182, 0.2); }
-        .alignment-confidence { border: 1px solid #233048; color: #9ab4db; background: rgba(10, 19, 34, 0.8); }
-        .alignment-metrics {
-          display: grid;
-          grid-template-columns: repeat(4, minmax(0, 1fr));
-          gap: 0.5rem;
-          margin-bottom: 0.75rem;
-        }
-        .alignment-metrics div {
-          border: 1px solid #1e2530;
-          border-radius: 10px;
-          padding: 0.65rem 0.7rem;
-          background: #0d1117;
-          display: flex;
-          flex-direction: column;
-          gap: 0.25rem;
-        }
-        .alignment-metrics strong {
-          font-size: 0.62rem;
-          color: #718096;
-          text-transform: uppercase;
-          letter-spacing: 0.08em;
-        }
-        .alignment-metrics span { font-size: 0.82rem; color: #e2e8f0; }
-        .alignment-summary-text {
-          font-size: 0.74rem;
-          color: #c8d0dc;
-          line-height: 1.7;
-        }
-        .alignment-warnings {
-          margin-top: 0.75rem;
-          border-left: 2px solid #f59e0b;
-          padding-left: 0.75rem;
-          color: #fbbf24;
-          font-size: 0.68rem;
-          display: grid;
-          gap: 0.25rem;
-        }
-        .alignment-section-title {
-          font-size: 0.68rem;
-          letter-spacing: 0.12em;
-          color: #9fb1cc;
-          text-transform: uppercase;
-          margin-bottom: 0.65rem;
-        }
-        .alignment-evidence-list,
-        .alignment-contradictions {
-          display: grid;
-          gap: 0.75rem;
-        }
-        .alignment-evidence-item,
-        .alignment-contradiction-item {
-          border: 1px solid #1e2530;
-          border-radius: 10px;
-          padding: 0.8rem;
-          background: #0d1117;
-          display: grid;
-          gap: 0.6rem;
-        }
-        .alignment-evidence-head {
-          display: flex;
-          align-items: center;
-          gap: 0.5rem;
-          flex-wrap: wrap;
-          font-size: 0.64rem;
-          color: #9ab4db;
-          text-transform: uppercase;
-          letter-spacing: 0.08em;
-        }
-        .alignment-score {
-          margin-left: auto;
-          color: #1a6ef5;
-          font-weight: 700;
-        }
-        .alignment-quotes {
-          display: grid;
-          gap: 0.5rem;
-        }
-        .alignment-quotes blockquote,
-        .alignment-contradiction-item blockquote {
-          margin: 0;
-          border-left: 2px solid #233048;
-          padding-left: 0.75rem;
-          font-size: 0.72rem;
-          color: #c8d0dc;
-          line-height: 1.65;
-          white-space: pre-wrap;
-        }
-        .alignment-chunk-ids {
-          display: flex;
-          gap: 0.5rem;
-          flex-wrap: wrap;
-          font-size: 0.6rem;
-          color: #718096;
-        }
-        .alignment-chunk-ids span {
-          border: 1px solid #1e2530;
-          border-radius: 999px;
-          padding: 0.18rem 0.45rem;
-          background: #0a0c10;
-        }
-        .alignment-reasons {
-          display: grid;
-          gap: 0.6rem;
-          list-style: none;
-        }
-        .alignment-reasons li {
-          display: grid;
-          gap: 0.25rem;
-          border: 1px solid #1e2530;
-          border-radius: 10px;
-          padding: 0.7rem;
-          background: #0d1117;
-        }
-        .alignment-reasons span { font-size: 0.72rem; color: #d6deea; line-height: 1.55; }
-        .alignment-reasons small { font-size: 0.6rem; color: #718096; }
-        .alignment-empty,
-        .alignment-empty-state {
-          font-size: 0.72rem;
-          color: #60708a;
-          line-height: 1.6;
-        }
-
-        @media (max-width: 1100px) {
-          .alignment-modal-body {
-            grid-template-columns: 1fr;
-          }
-          .alignment-metrics {
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-          }
-        }
-
-        @media (max-width: 720px) {
-          .alignment-modal-overlay {
-            padding: 0.6rem;
-          }
-          .alignment-modal-header,
-          .alignment-modal-body {
-            padding: 0.85rem;
-          }
-          .alignment-metrics {
-            grid-template-columns: 1fr;
-          }
-        }
-
-        /* ── Chat Section ────────────────────────────────────────────────── */
-        .main {
-          flex: 1;
-          display: flex;
-          overflow: hidden;
-        }
-
-        .docs-sidebar {
-          width: 280px;
-          border-right: 1px solid var(--line);
-          background: var(--surface);
-          display: flex;
-          flex-direction: column;
-          overflow: hidden;
-          flex-shrink: 0;
-        }
-
-        .sidebar-header {
-          padding: 1.25rem 1rem;
-          border-bottom: 1px solid var(--line);
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 0.75rem;
-        }
-
-        .sidebar-title {
-          font-size: 0.85rem;
-          font-weight: 600;
-          color: var(--text-primary);
-          letter-spacing: 0.05em;
-          text-transform: uppercase;
-        }
-
-        .sidebar-toggle {
-          width: 32px;
-          height: 32px;
-          border-radius: 6px;
-          border: 1px solid var(--line);
-          background: var(--bg);
-          color: var(--text-secondary);
-          font-size: 1.2rem;
-          cursor: pointer;
-          transition: all 0.2s;
-        }
-
-        .sidebar-toggle:hover {
-          border-color: var(--accent);
-          color: var(--accent);
-        }
-
-        .sidebar-empty {
-          padding: 1.5rem 1rem;
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          justify-content: center;
-          gap: 1rem;
-          flex: 1;
-        }
-
-        .sidebar-empty p {
-          font-size: 0.75rem;
-          color: var(--text-secondary);
-          text-align: center;
-        }
-
-        .sidebar-add {
-          padding: 0.5rem 1rem;
-          border: 1px solid var(--accent);
-          border-radius: 4px;
-          background: transparent;
-          color: var(--accent);
-          font-size: 0.75rem;
-          font-weight: 600;
-          letter-spacing: 0.05em;
-          cursor: pointer;
-          transition: all 0.2s;
-        }
-
-        .sidebar-add:hover {
-          background: rgba(79, 140, 255, 0.1);
-        }
-
-        .sidebar-docs-list {
-          list-style: none;
-          flex: 1;
-          overflow-y: auto;
-          padding: 0.5rem;
-          display: flex;
-          flex-direction: column;
-          gap: 0.5rem;
-        }
-
-        .sidebar-doc-item {
-          padding: 0.75rem;
-          border-radius: 6px;
-          background: var(--bg);
-          border: 1px solid var(--line);
-          display: flex;
-          align-items: flex-start;
-          gap: 0.6rem;
-          transition: all 0.2s;
-        }
-
-        .sidebar-doc-item:hover {
-          border-color: var(--accent);
-          background: rgba(79, 140, 255, 0.05);
-        }
-
-        .sidebar-doc-icon {
-          width: 24px;
-          height: 24px;
-          border-radius: 4px;
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          background: var(--accent-soft);
-          border: 1px solid rgba(79, 140, 255, 0.3);
-          font-size: 0.6rem;
-          font-weight: 700;
-          flex-shrink: 0;
-          color: var(--accent);
-        }
-
-        .sidebar-doc-info {
-          display: flex;
-          flex-direction: column;
-          gap: 0.2rem;
-          min-width: 0;
-        }
-
-        .sidebar-doc-name {
-          font-size: 0.7rem;
-          color: var(--text-primary);
-          font-weight: 600;
-          word-break: break-word;
-          line-height: 1.3;
-        }
-
-        .sidebar-doc-meta {
-          font-size: 0.6rem;
-          color: var(--text-secondary);
-          text-transform: uppercase;
-          letter-spacing: 0.03em;
-        }
-
+        /* Chat Section */
         .chat-section {
           flex: 1;
           display: flex;
@@ -1586,348 +783,759 @@ export default function HorizonBotPage() {
           overflow: hidden;
         }
 
-        .messages-container {
+        .messages-wrapper {
           flex: 1;
           overflow-y: auto;
-          padding: 2.5rem;
           display: flex;
-          flex-direction: column;
-          gap: 1.75rem;
+          justify-content: center;
         }
 
-        /* ── Empty State ─────────────────────────────────────────────────── */
+        .messages-container {
+          width: 100%;
+          max-width: 768px;
+          padding: 2rem 1rem;
+          display: flex;
+          flex-direction: column;
+          gap: 2rem;
+        }
+
+        /* Empty State */
         .empty-state {
-          margin: auto;
-          text-align: center;
-          max-width: 520px;
           display: flex;
           flex-direction: column;
           align-items: center;
-          gap: 1.5rem;
+          text-align: center;
           padding: 4rem 2rem;
+          gap: 1.5rem;
         }
-        .empty-icon { 
-          font-size: 3rem; 
-          color: var(--accent); 
-          opacity: 0.6; 
-        }
-        .empty-title { 
-          font-size: 1.3rem; 
-          color: var(--text-primary); 
-          font-weight: 700;
-          letter-spacing: 0.01em;
-        }
-        .empty-body { 
-          font-size: 0.9rem; 
-          color: var(--text-secondary); 
-          line-height: 1.8;
-          max-width: 420px;
-        }
-        .example-pills { 
-          display: flex; 
-          flex-wrap: wrap; 
-          gap: 0.8rem; 
-          justify-content: center;
-          margin-top: 1rem;
-        }
-        .pill {
-          background: transparent;
-          border: 1px solid var(--line);
-          color: var(--text-secondary);
-          padding: 0.5rem 1rem;
-          font-family: inherit;
-          font-size: 0.8rem;
-          cursor: pointer;
-          border-radius: 8px;
-          transition: all 0.2s;
-          letter-spacing: 0.02em;
-          font-weight: 500;
-        }
-        .pill:hover { 
-          border-color: var(--accent); 
+
+        .empty-icon {
           color: var(--accent);
-          background: rgba(79, 140, 255, 0.05);
+          opacity: 0.6;
         }
 
-        /* ── Messages ────────────────────────────────────────────────────── */
-        .message-row { 
-          display: flex; 
-          animation: fadeInUp 0.3s ease-out;
-        }
-        .message-row.user { justify-content: flex-end; }
-        .message-row.assistant { justify-content: flex-start; }
-        .message-bubble {
-          max-width: 80%;
-          background: var(--surface);
-          border: 1px solid var(--line);
-          border-radius: 8px;
-          padding: 1.25rem 1.5rem;
-        }
-        .message-row.user .message-bubble { 
-          background: rgba(79, 140, 255, 0.12);
-          border-color: var(--accent);
-        }
-        .message-role {
-          display: block;
-          font-size: 0.65rem;
-          letter-spacing: 0.08em;
-          color: var(--text-secondary);
-          margin-bottom: 0.5rem;
-          font-weight: 600;
-          text-transform: uppercase;
-        }
-        .message-row.user .message-role { color: var(--accent); }
-
-        /* Markdown table styling */
-        :global(.message-content table) {
-          width: 100%;
-          border-collapse: collapse;
-          font-size: 0.85rem;
-          margin-top: 0.75rem;
-        }
-        :global(.message-content th) {
-          background: rgba(79, 140, 255, 0.08);
-          color: var(--text-primary);
-          text-align: left;
-          padding: 0.75rem 1rem;
-          font-size: 0.75rem;
-          letter-spacing: 0.05em;
-          border-bottom: 2px solid var(--line);
+        .empty-title {
+          font-size: 1.75rem;
           font-weight: 700;
+          color: var(--text-primary);
         }
-        :global(.message-content td) {
-          padding: 0.75rem 1rem;
-          border-bottom: 1px solid var(--line);
+
+        .empty-body {
+          font-size: 1rem;
           color: var(--text-secondary);
           line-height: 1.6;
-          vertical-align: top;
+          max-width: 560px;
         }
-        :global(.message-content tr:last-child td) { border-bottom: none; }
-        :global(.message-content p) { 
-          font-size: 0.95rem; 
-          line-height: 1.75; 
+
+        /* Messages */
+        .message {
+          display: flex;
+          gap: 1rem;
+          padding: 1.5rem 0;
+        }
+
+        .message.user {
+          background: rgba(79, 140, 255, 0.03);
+          margin: 0 -1rem;
+          padding: 1.5rem 1rem;
+          border-radius: 8px;
+        }
+
+        .message-avatar {
+          width: 36px;
+          height: 36px;
+          border-radius: 50%;
+          background: var(--surface);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          flex-shrink: 0;
+          color: var(--text-secondary);
+        }
+
+        .message.user .message-avatar {
+          background: var(--accent);
+          color: white;
+        }
+
+        .message-content {
+          flex: 1;
+          min-width: 0;
+        }
+
+        :global(.message-content p) {
+          font-size: 0.95rem;
+          line-height: 1.7;
           color: var(--text-primary);
           margin: 0.5rem 0;
         }
+
+        :global(.message-content p:first-child) {
+          margin-top: 0;
+        }
+
         :global(.message-content code) {
-          background: rgba(79, 140, 255, 0.15);
+          background: var(--surface);
           color: var(--accent);
-          padding: 0.15rem 0.5rem;
+          padding: 0.125rem 0.375rem;
           border-radius: 4px;
-          font-size: 0.85em;
+          font-size: 0.875em;
           font-family: 'Monaco', 'Courier New', monospace;
         }
 
-        /* Typing indicator */
-        .loading { opacity: 0.8; }
-        .typing-indicator { 
-          display: flex; 
-          gap: 5px; 
-          align-items: center; 
-          height: 24px; 
+        :global(.message-content table) {
+          width: 100%;
+          border-collapse: collapse;
+          margin: 1rem 0;
         }
+
+        :global(.message-content th) {
+          background: var(--surface);
+          padding: 0.75rem 1rem;
+          text-align: left;
+          font-weight: 600;
+          border-bottom: 1px solid var(--border);
+        }
+
+        :global(.message-content td) {
+          padding: 0.75rem 1rem;
+          border-bottom: 1px solid var(--border);
+        }
+
+        /* Typing Indicator */
+        .typing-indicator {
+          display: flex;
+          gap: 4px;
+          padding: 0.5rem 0;
+        }
+
         .typing-indicator span {
-          width: 6px; 
+          width: 6px;
           height: 6px;
-          background: var(--accent);
+          background: var(--text-secondary);
           border-radius: 50%;
-          animation: blink 1.3s infinite;
+          animation: bounce 1.4s infinite;
         }
-        .typing-indicator span:nth-child(2) { animation-delay: 0.2s; }
-        .typing-indicator span:nth-child(3) { animation-delay: 0.4s; }
-        @keyframes blink {
-          0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); }
-          40% { opacity: 1; transform: scale(1); }
+
+        .typing-indicator span:nth-child(2) {
+          animation-delay: 0.2s;
         }
-        @keyframes fadeInUp {
-          from {
-            opacity: 0;
-            transform: translateY(10px);
-          }
-          to {
-            opacity: 1;
+
+        .typing-indicator span:nth-child(3) {
+          animation-delay: 0.4s;
+        }
+
+        @keyframes bounce {
+          0%, 60%, 100% {
             transform: translateY(0);
+            opacity: 0.4;
+          }
+          30% {
+            transform: translateY(-8px);
+            opacity: 1;
           }
         }
 
-        /* ── Input Area ──────────────────────────────────────────────────── */
+        /* Input Area */
+        .input-wrapper {
+          border-top: 1px solid var(--border);
+          padding: 1.5rem 1rem;
+          flex-shrink: 0;
+          display: flex;
+          justify-content: center;
+        }
+
+        .input-container {
+          width: 100%;
+          max-width: 768px;
+          display: flex;
+          flex-direction: column;
+          gap: 0.75rem;
+        }
+
         .input-form {
           display: flex;
+          align-items: center;
           gap: 0.75rem;
-          padding: 1.75rem 2.5rem;
-          border-top: 1px solid var(--line);
-          background: var(--bg);
-          flex-shrink: 0;
-        }
-        .add-docs-btn {
-          border: 1px solid var(--line);
           background: var(--surface);
-          color: var(--text-secondary);
-          border-radius: 6px;
-          padding: 0 1.25rem;
-          font-size: 0.8rem;
-          letter-spacing: 0.05em;
-          font-family: inherit;
-          cursor: pointer;
-          flex-shrink: 0;
-          transition: all 0.2s;
-          font-weight: 500;
+          border: 1px solid var(--border);
+          border-radius: 24px;
+          padding: 0.5rem;
+          transition: border-color 0.2s;
         }
-        .add-docs-btn:hover {
+
+        .input-form:focus-within {
           border-color: var(--accent);
-          color: var(--accent);
-          background: rgba(79, 140, 255, 0.05);
         }
-        .chat-input {
-          flex: 1;
-          background: var(--surface);
-          border: 1px solid var(--line);
-          border-radius: 6px;
-          color: var(--text-primary);
-          font-family: inherit;
-          font-size: 0.95rem;
-          padding: 0.9rem 1.25rem;
-          transition: all 0.2s;
+
+        .input-actions {
+          display: flex;
+          gap: 0.25rem;
+          padding-left: 0.25rem;
         }
-        .chat-input:focus { 
-          outline: none; 
-          border-color: var(--accent);
-          box-shadow: 0 0 0 2px rgba(79, 140, 255, 0.1);
-        }
-        .chat-input::placeholder { color: var(--text-secondary); }
-        .send-btn {
-          background: var(--accent);
+
+        .action-btn {
+          width: 36px;
+          height: 36px;
           border: none;
-          color: white;
-          width: 48px;
-          height: 48px;
-          border-radius: 6px;
-          font-size: 1.2rem;
+          background: transparent;
+          color: var(--text-secondary);
+          border-radius: 8px;
           cursor: pointer;
-          transition: all 0.2s;
-          flex-shrink: 0;
           display: flex;
           align-items: center;
           justify-content: center;
+          transition: all 0.2s;
         }
-        .send-btn:hover:not(:disabled) { 
-          background: #6BA0FF;
-          transform: translateY(-2px);
-          box-shadow: 0 4px 12px rgba(79, 140, 255, 0.3);
+
+        .action-btn:hover {
+          background: var(--surface-hover);
+          color: var(--text-primary);
         }
-        .send-btn:disabled { 
-          background: var(--line);
+
+        .chat-input {
+          flex: 1;
+          background: transparent;
+          border: none;
+          color: var(--text-primary);
+          font-family: inherit;
+          font-size: 0.95rem;
+          padding: 0.5rem 0.75rem;
+          outline: none;
+        }
+
+        .chat-input::placeholder {
+          color: var(--text-tertiary);
+        }
+
+        .send-btn {
+          width: 36px;
+          height: 36px;
+          border: none;
+          background: var(--accent);
+          color: white;
+          border-radius: 8px;
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          transition: all 0.2s;
+        }
+
+        .send-btn:hover:not(:disabled) {
+          background: var(--accent-hover);
+        }
+
+        .send-btn:disabled {
+          opacity: 0.4;
           cursor: not-allowed;
-          opacity: 0.5;
         }
 
-        /* ── Footer Disclaimer ───────────────────────────────────────────── */
-        .disclaimer {
-          text-align: center;
-          font-size: 0.6rem;
-          color: var(--text-secondary);
-          padding: 0.5rem 2rem 0.75rem;
-          letter-spacing: 0.05em;
+        .active-docs-badge {
+          display: flex;
+          align-items: center;
+          gap: 0.5rem;
+          font-size: 0.8rem;
+          color: var(--text-tertiary);
+          justify-content: center;
         }
-        .health-link {
-          color: var(--text-secondary);
-          text-decoration: none;
-        }
-        .health-link:hover { color: var(--accent); }
 
-        /* ── Error ───────────────────────────────────────────────────────── */
-        .error-banner {
-          background: rgba(220, 38, 38, 0.1);
-          border: 1px solid rgba(220, 38, 38, 0.3);
-          color: #fc8181;
+        /* Documents Section */
+        .docs-section {
+          flex: 1;
+          overflow-y: auto;
+          display: flex;
+          justify-content: center;
+        }
+
+        .docs-container {
+          width: 100%;
+          max-width: 1024px;
+          padding: 2rem 1rem;
+          display: flex;
+          flex-direction: column;
+          gap: 2rem;
+        }
+
+        .docs-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: flex-start;
+          gap: 2rem;
+          flex-wrap: wrap;
+        }
+
+        .docs-title {
+          font-size: 1.5rem;
+          font-weight: 700;
+          color: var(--text-primary);
+        }
+
+        .docs-subtitle {
+          font-size: 0.9rem;
+          color: var(--text-secondary);
+          margin-top: 0.5rem;
+        }
+
+        .docs-actions {
+          display: flex;
+          gap: 0.75rem;
+        }
+
+        .docs-upload-area {
+          display: flex;
+          gap: 0.75rem;
+          flex-wrap: wrap;
+        }
+
+        .file-input {
+          flex: 1;
+          min-width: 200px;
           padding: 0.75rem 1rem;
-          border-radius: 4px;
+          background: var(--surface);
+          border: 1px solid var(--border);
+          border-radius: 8px;
+          color: var(--text-primary);
+          font-size: 0.875rem;
+        }
+
+        .btn-primary {
+          background: var(--accent);
+          color: white;
+          border: none;
+          padding: 0.75rem 1.5rem;
+          border-radius: 8px;
+          font-family: inherit;
+          font-size: 0.875rem;
+          font-weight: 600;
+          cursor: pointer;
+          transition: all 0.2s;
+        }
+
+        .btn-primary:hover:not(:disabled) {
+          background: var(--accent-hover);
+        }
+
+        .btn-primary:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
+        }
+
+        .btn-secondary {
+          background: var(--surface);
+          color: var(--text-primary);
+          border: 1px solid var(--border);
+          padding: 0.75rem 1.5rem;
+          border-radius: 8px;
+          font-family: inherit;
+          font-size: 0.875rem;
+          font-weight: 600;
+          cursor: pointer;
+          transition: all 0.2s;
+        }
+
+        .btn-secondary:hover:not(:disabled) {
+          background: var(--surface-hover);
+          border-color: var(--accent);
+        }
+
+        .btn-secondary:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
+        }
+
+        .docs-notice {
+          padding: 1rem;
+          background: var(--surface);
+          border: 1px solid var(--border);
+          border-radius: 8px;
+          font-size: 0.875rem;
+          color: var(--text-secondary);
+        }
+
+        .docs-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+          gap: 1rem;
+        }
+
+        .docs-empty {
+          grid-column: 1 / -1;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          gap: 1rem;
+          padding: 4rem 2rem;
+          text-align: center;
+          color: var(--text-tertiary);
+        }
+
+        .doc-card {
+          background: var(--surface);
+          border: 1px solid var(--border);
+          border-radius: 12px;
+          padding: 1.25rem;
+          display: flex;
+          flex-direction: column;
+          gap: 0.75rem;
+          transition: all 0.2s;
+        }
+
+        .doc-card:hover {
+          border-color: var(--accent);
+          transform: translateY(-2px);
+        }
+
+        .doc-card-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+        }
+
+        .doc-icon {
+          width: 40px;
+          height: 40px;
+          border-radius: 8px;
+          background: rgba(79, 140, 255, 0.1);
+          border: 1px solid rgba(79, 140, 255, 0.2);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 0.7rem;
+          font-weight: 700;
+          color: var(--accent);
+        }
+
+        .doc-delete {
+          width: 28px;
+          height: 28px;
+          border-radius: 6px;
+          border: 1px solid transparent;
+          background: transparent;
+          color: var(--text-tertiary);
+          font-size: 1.25rem;
+          line-height: 1;
+          cursor: pointer;
+          transition: all 0.2s;
+        }
+
+        .doc-delete:hover {
+          background: rgba(239, 68, 68, 0.1);
+          border-color: rgba(239, 68, 68, 0.2);
+          color: #EF4444;
+        }
+
+        .doc-name {
+          font-size: 0.95rem;
+          font-weight: 600;
+          color: var(--text-primary);
+          word-break: break-word;
+        }
+
+        .doc-meta {
+          font-size: 0.8rem;
+          color: var(--text-tertiary);
+        }
+
+        .docs-logs {
+          background: var(--surface);
+          border: 1px solid var(--border);
+          border-radius: 12px;
+          padding: 1.25rem;
+        }
+
+        .docs-logs h3 {
+          font-size: 0.95rem;
+          margin-bottom: 1rem;
+          color: var(--text-primary);
+        }
+
+        .docs-logs pre {
+          font-size: 0.8rem;
+          color: var(--text-secondary);
+          line-height: 1.6;
+          white-space: pre-wrap;
+        }
+
+        /* Alignment Modal */
+        .alignment-modal-overlay {
+          position: fixed;
+          inset: 0;
+          background: rgba(0, 0, 0, 0.8);
+          backdrop-filter: blur(4px);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 1rem;
+          z-index: 50;
+        }
+
+        .alignment-modal {
+          width: 100%;
+          max-width: 900px;
+          max-height: 90vh;
+          background: var(--bg);
+          border: 1px solid var(--border);
+          border-radius: 16px;
+          overflow: hidden;
+          display: flex;
+          flex-direction: column;
+        }
+
+        .alignment-modal-header {
+          padding: 1.5rem;
+          border-bottom: 1px solid var(--border);
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          gap: 1rem;
+        }
+
+        .alignment-title {
+          font-size: 1.1rem;
+          font-weight: 700;
+          color: var(--text-primary);
+        }
+
+        .alignment-subtitle {
+          font-size: 0.85rem;
+          color: var(--text-secondary);
+          margin-top: 0.25rem;
+        }
+
+        .alignment-close {
+          width: 36px;
+          height: 36px;
+          border-radius: 8px;
+          border: 1px solid var(--border);
+          background: transparent;
+          color: var(--text-secondary);
+          font-size: 1.5rem;
+          line-height: 1;
+          cursor: pointer;
+          transition: all 0.2s;
+        }
+
+        .alignment-close:hover {
+          background: var(--surface);
+          color: var(--text-primary);
+        }
+
+        .alignment-modal-body {
+          padding: 1.5rem;
+          overflow-y: auto;
+          display: flex;
+          flex-direction: column;
+          gap: 1.5rem;
+        }
+
+        .alignment-selectors {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 1rem;
+        }
+
+        .alignment-picker {
+          background: var(--surface);
+          border: 1px solid var(--border);
+          border-radius: 12px;
+          padding: 1rem;
+          display: flex;
+          flex-direction: column;
+          gap: 0.75rem;
+        }
+
+        .alignment-picker-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          gap: 0.75rem;
+        }
+
+        .alignment-label {
+          font-size: 0.85rem;
+          font-weight: 600;
+          color: var(--text-primary);
+        }
+
+        .alignment-selected-pill {
           font-size: 0.75rem;
+          color: var(--text-secondary);
+          background: var(--bg);
+          border-radius: 12px;
+          padding: 0.25rem 0.75rem;
+          max-width: 200px;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
         }
 
-        @media (max-width: 900px) {
-          .docs-sidebar {
-            width: 240px;
-          }
-          .messages-container {
-            padding: 2rem 1.5rem;
-          }
-          .input-form {
-            padding: 1.5rem 1.5rem;
-            gap: 0.6rem;
-          }
+        .alignment-search {
+          background: var(--bg);
+          border: 1px solid var(--border);
+          border-radius: 8px;
+          color: var(--text-primary);
+          padding: 0.75rem;
+          font-family: inherit;
+          font-size: 0.875rem;
         }
 
-        @media (max-width: 640px) {
-          .docs-sidebar {
-            display: none;
-          }
-          .header {
-            padding: 0 0.8rem;
-          }
+        .alignment-search:focus {
+          outline: none;
+          border-color: var(--accent);
+        }
+
+        .alignment-doc-list {
+          display: flex;
+          flex-direction: column;
+          gap: 0.5rem;
+          max-height: 200px;
+          overflow-y: auto;
+        }
+
+        .alignment-doc-item {
+          background: var(--bg);
+          border: 1px solid var(--border);
+          border-radius: 8px;
+          padding: 0.75rem;
+          cursor: pointer;
+          text-align: left;
+          display: flex;
+          flex-direction: column;
+          gap: 0.25rem;
+          transition: all 0.2s;
+        }
+
+        .alignment-doc-item:hover {
+          border-color: var(--accent);
+        }
+
+        .alignment-doc-item.active {
+          background: rgba(79, 140, 255, 0.1);
+          border-color: var(--accent);
+        }
+
+        .alignment-doc-name {
+          font-size: 0.875rem;
+          color: var(--text-primary);
+        }
+
+        .alignment-doc-meta {
+          font-size: 0.75rem;
+          color: var(--text-tertiary);
+        }
+
+        .alignment-results {
+          display: flex;
+          flex-direction: column;
+          gap: 1rem;
+        }
+
+        .alignment-result-card {
+          background: var(--surface);
+          border: 1px solid var(--border);
+          border-radius: 12px;
+          padding: 1.25rem;
+          display: flex;
+          flex-direction: column;
+          gap: 1rem;
+        }
+
+        .alignment-verdict-row {
+          display: flex;
+          align-items: center;
+          gap: 0.75rem;
+          flex-wrap: wrap;
+        }
+
+        .alignment-verdict {
+          padding: 0.375rem 0.875rem;
+          border-radius: 16px;
+          font-size: 0.85rem;
+          font-weight: 600;
+        }
+
+        .alignment-verdict-aligned {
+          background: rgba(34, 197, 94, 0.1);
+          color: #22C55E;
+        }
+
+        .alignment-verdict-partial {
+          background: rgba(234, 179, 8, 0.1);
+          color: #EAB308;
+        }
+
+        .alignment-verdict-not_aligned {
+          background: rgba(239, 68, 68, 0.1);
+          color: #EF4444;
+        }
+
+        .alignment-verdict-insufficient_evidence {
+          background: rgba(168, 85, 247, 0.1);
+          color: #A855F7;
+        }
+
+        .alignment-confidence {
+          font-size: 0.85rem;
+          color: var(--text-secondary);
+        }
+
+        .alignment-summary {
+          font-size: 0.9rem;
+          color: var(--text-primary);
+          line-height: 1.6;
+        }
+
+        /* Error Banner */
+        .error-banner {
+          background: rgba(239, 68, 68, 0.1);
+          border: 1px solid rgba(239, 68, 68, 0.2);
+          color: #EF4444;
+          padding: 1rem;
+          border-radius: 8px;
+          font-size: 0.875rem;
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
           .header-inner {
-            height: 70px;
+            height: 56px;
           }
-          .mode-btn {
-            padding: 0.4rem 0.8rem;
-            font-size: 0.75rem;
-          }
-          .logo-sub {
-            display: none;
-          }
+
           .logo-title {
             font-size: 1rem;
           }
-          .docs-section {
-            padding: 1rem 0.8rem;
+
+          .logo-sub {
+            display: none;
           }
-          .docs-toolbar {
-            padding: 0.8rem;
-          }
-          .file-input {
-            width: 100%;
-            max-width: 100%;
-          }
-          .docs-actions {
-            width: 100%;
-          }
-          .docs-btn {
-            flex: 1;
-            min-width: 130px;
-          }
+
           .messages-container {
             padding: 1.5rem 1rem;
           }
-          .input-form {
-            padding: 1rem 1rem;
-            gap: 0.5rem;
+
+          .message {
+            gap: 0.75rem;
           }
-          .add-docs-btn {
-            padding: 0 0.8rem;
-            font-size: 0.75rem;
+
+          .message-avatar {
+            width: 32px;
+            height: 32px;
           }
-          .chat-input {
-            font-size: 0.85rem;
-            padding: 0.75rem 1rem;
+
+          .input-wrapper {
+            padding: 1rem;
           }
-          .send-btn {
-            width: 44px;
-            height: 44px;
-            font-size: 1.1rem;
+
+          .alignment-selectors {
+            grid-template-columns: 1fr;
           }
-          .empty-title {
-            font-size: 1.15rem;
+
+          .docs-grid {
+            grid-template-columns: 1fr;
           }
-          .empty-body {
-            font-size: 0.85rem;
-          }
-          .example-pills {
-            gap: 0.6rem;
-          }
-          .pill {
-            padding: 0.4rem 0.8rem;
-            font-size: 0.75rem;
-          }
+        }
       `}</style>
     </div>
   );
