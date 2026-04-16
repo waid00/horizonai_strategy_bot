@@ -1,0 +1,13 @@
+# Horizon AI Strategy Bot – Python Agent Service
+#
+# Install with: pip install -r requirements.txt
+#
+# pydantic-ai>=1.56.0 is required to avoid a known SSRF vulnerability in URL
+# download handling (GHSA: affected >= 0.0.26, < 1.56.0).
+
+pydantic-ai[openai]>=1.56.0
+fastapi>=0.115.12
+uvicorn[standard]>=0.34.2
+httpx>=0.28.1
+pypdf>=5.4.0
+python-docx>=1.1.2
