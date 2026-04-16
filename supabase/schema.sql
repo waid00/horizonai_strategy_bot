@@ -89,3 +89,47 @@ CREATE POLICY "documents_service_role_select"
 -- 5. Helper: wipe and reseed (development only)
 -- ============================================================
 -- TRUNCATE documents RESTART IDENTITY;
+
+-- ============================================================
+-- 6. Data Records table – plain tabular data from Databricks
+--    row_data holds one source row as a JSON object.
+--    table_name lets multiple Databricks tables coexist.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS data_records (
+  id          BIGSERIAL    PRIMARY KEY,
+  table_name  TEXT         NOT NULL,
+  row_data    JSONB        NOT NULL DEFAULT '{}'::JSONB,
+  synced_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+-- GIN index for fast JSONB filtering / aggregation
+CREATE INDEX IF NOT EXISTS data_records_row_data_gin_idx
+  ON data_records USING GIN (row_data);
+
+-- Index on table_name for fast per-table queries
+CREATE INDEX IF NOT EXISTS data_records_table_name_idx
+  ON data_records (table_name);
+
+-- ── RLS for data_records ─────────────────────────────────────────────────────
+ALTER TABLE data_records ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "data_records_service_role_insert" ON data_records;
+CREATE POLICY "data_records_service_role_insert"
+  ON data_records
+  FOR INSERT
+  TO service_role
+  WITH CHECK (true);
+
+DROP POLICY IF EXISTS "data_records_service_role_select" ON data_records;
+CREATE POLICY "data_records_service_role_select"
+  ON data_records
+  FOR SELECT
+  TO service_role
+  USING (true);
+
+DROP POLICY IF EXISTS "data_records_service_role_delete" ON data_records;
+CREATE POLICY "data_records_service_role_delete"
+  ON data_records
+  FOR DELETE
+  TO service_role
+  USING (true);

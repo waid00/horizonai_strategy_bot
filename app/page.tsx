@@ -8,6 +8,12 @@ import { useState, useRef, useEffect } from "react";
 import { useChat } from "@ai-sdk/react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import {
+  BarChart, Bar,
+  LineChart, Line,
+  PieChart, Pie, Cell,
+  XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
+} from "recharts";
 
 type Mode = "chat" | "documents";
 
@@ -89,6 +95,230 @@ function getDocIcon(extension: string): string {
   return "TXT";
 }
 
+// ─── Dashboard Types ──────────────────────────────────────────────────────────
+
+type ChartType = "bar" | "line" | "pie" | "table";
+
+type ChartSpec = {
+  title: string;
+  type: ChartType;
+  sql: string;
+};
+
+type ChartResult = {
+  title: string;
+  type: string;
+  data?: Record<string, unknown>[];
+  error?: string;
+};
+
+// ─── Chart palette ────────────────────────────────────────────────────────────
+
+const CHART_COLORS = ["#4F8CFF", "#22C55E", "#EAB308", "#A855F7", "#EF4444", "#06B6D4", "#F97316"];
+
+// ─── DashboardBlock ───────────────────────────────────────────────────────────
+
+function DashboardBlock({ specs }: { specs: ChartSpec[] }) {
+  const [charts, setCharts] = useState<ChartResult[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Stable key derived from the spec content so we only re-fetch when specs change
+  const specsKey = JSON.stringify(specs);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      setLoading(true);
+      setError(null);
+      try {
+        const res = await fetch("/api/dashboard", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ charts: specs }),
+        });
+        const json = await res.json();
+        if (!cancelled) {
+          setCharts(Array.isArray(json.charts) ? json.charts : []);
+        }
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : "Dashboard failed.");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+    load();
+    return () => { cancelled = true; };
+  // specsKey is a stable primitive derived from specs; it correctly tracks changes
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [specsKey]);
+
+  if (loading) {
+    return (
+      <div className="dashboard-loading">
+        <span className="typing-indicator" style={{ display: "inline-flex", gap: 4 }}>
+          <span /><span /><span />
+        </span>
+        <span style={{ marginLeft: 8, color: "var(--text-secondary)", fontSize: "0.875rem" }}>Building dashboard…</span>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="error-banner" style={{ marginTop: "0.75rem" }}>⚠ {error}</div>
+    );
+  }
+
+  if (!charts) return null;
+
+  return (
+    <div className="dashboard-grid">
+      {charts.map((chart, idx) => (
+        <div key={idx} className="dashboard-card">
+          <p className="dashboard-card-title">{chart.title}</p>
+          {chart.error ? (
+            <p className="dashboard-card-error">⚠ {chart.error}</p>
+          ) : (
+            <ChartRenderer chart={chart} colorIndex={idx} />
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ChartRenderer({ chart, colorIndex }: { chart: ChartResult; colorIndex: number }) {
+  const rows = chart.data ?? [];
+  if (rows.length === 0) {
+    return <p className="dashboard-card-empty">No data returned.</p>;
+  }
+
+  const color = CHART_COLORS[colorIndex % CHART_COLORS.length];
+  const keys = Object.keys(rows[0]);
+  const xKey = keys[0];
+  const yKey = keys[1] ?? keys[0];
+
+  // Normalise values to numbers for numeric charts
+  const numericData = rows.map((r) => ({
+    ...r,
+    [yKey]: Number(r[yKey]) || 0,
+  }));
+
+  if (chart.type === "bar") {
+    return (
+      <ResponsiveContainer width="100%" height={220}>
+        <BarChart data={numericData} margin={{ top: 8, right: 16, left: 0, bottom: 24 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#1F2937" />
+          <XAxis dataKey={xKey} tick={{ fill: "#9CA3AF", fontSize: 11 }} angle={-30} textAnchor="end" />
+          <YAxis tick={{ fill: "#9CA3AF", fontSize: 11 }} />
+          <Tooltip contentStyle={{ background: "#1F2937", border: "none", borderRadius: 8 }} />
+          <Bar dataKey={yKey} fill={color} radius={[4, 4, 0, 0]} />
+        </BarChart>
+      </ResponsiveContainer>
+    );
+  }
+
+  if (chart.type === "line") {
+    return (
+      <ResponsiveContainer width="100%" height={220}>
+        <LineChart data={numericData} margin={{ top: 8, right: 16, left: 0, bottom: 24 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#1F2937" />
+          <XAxis dataKey={xKey} tick={{ fill: "#9CA3AF", fontSize: 11 }} angle={-30} textAnchor="end" />
+          <YAxis tick={{ fill: "#9CA3AF", fontSize: 11 }} />
+          <Tooltip contentStyle={{ background: "#1F2937", border: "none", borderRadius: 8 }} />
+          <Line type="monotone" dataKey={yKey} stroke={color} strokeWidth={2} dot={false} />
+        </LineChart>
+      </ResponsiveContainer>
+    );
+  }
+
+  if (chart.type === "pie") {
+    const pieData = rows.map((r) => ({
+      name: String(r[xKey] ?? ""),
+      value: Number(r[yKey]) || 0,
+    }));
+    return (
+      <ResponsiveContainer width="100%" height={220}>
+        <PieChart>
+          <Pie data={pieData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80} label>
+            {pieData.map((_, i) => (
+              <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
+            ))}
+          </Pie>
+          <Tooltip contentStyle={{ background: "#1F2937", border: "none", borderRadius: 8 }} />
+          <Legend wrapperStyle={{ color: "#9CA3AF", fontSize: 12 }} />
+        </PieChart>
+      </ResponsiveContainer>
+    );
+  }
+
+  // Fallback: table
+  return (
+    <div style={{ overflowX: "auto" }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.8rem" }}>
+        <thead>
+          <tr>
+            {keys.map((k) => (
+              <th key={k} style={{ background: "var(--surface)", padding: "0.5rem 0.75rem", textAlign: "left", color: "var(--text-secondary)", borderBottom: "1px solid var(--border)" }}>{k}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.slice(0, 50).map((row, i) => (
+            <tr key={i}>
+              {keys.map((k) => (
+                <td key={k} style={{ padding: "0.5rem 0.75rem", borderBottom: "1px solid var(--border)", color: "var(--text-primary)" }}>{String(row[k] ?? "")}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ─── Message content renderer ─────────────────────────────────────────────────
+
+/**
+ * Renders an assistant message, replacing <dashboard>[...]</dashboard> tags
+ * with the interactive DashboardBlock component.
+ */
+function MessageContent({ text }: { text: string }) {
+  const DASHBOARD_RE = /<dashboard>(\[[\s\S]*?])<\/dashboard>/;
+  const match = DASHBOARD_RE.exec(text);
+
+  if (!match) {
+    return (
+      <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
+    );
+  }
+
+  const before = text.slice(0, match.index).trim();
+  const after = text.slice(match.index + match[0].length).trim();
+
+  let specs: ChartSpec[] = [];
+  try {
+    specs = JSON.parse(match[1]) as ChartSpec[];
+  } catch {
+    return (
+      <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
+    );
+  }
+
+  return (
+    <>
+      {before && (
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{before}</ReactMarkdown>
+      )}
+      <DashboardBlock specs={specs} />
+      {after && (
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{after}</ReactMarkdown>
+      )}
+    </>
+  );
+}
+
 export default function HorizonBotPage() {
   const [mode, setMode] = useState<Mode>("chat");
   const [input, setInput] = useState("");
@@ -96,6 +326,7 @@ export default function HorizonBotPage() {
   const [docsFiles, setDocsFiles] = useState<ManagedDocument[]>([]);
   const [uploading, setUploading] = useState(false);
   const [ingesting, setIngesting] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const [docsNotice, setDocsNotice] = useState<string | null>(null);
   const [ingestLogs, setIngestLogs] = useState<string[]>([]);
   const [alignmentOpen, setAlignmentOpen] = useState(false);
@@ -122,6 +353,11 @@ export default function HorizonBotPage() {
       .join("\n");
   }
 
+  /** Detect whether the user's message is requesting a dashboard. */
+  function isDashboardRequest(text: string): boolean {
+    return /\b(dashboard|chart|graph|visuali[sz]e|plot|visual)\b/i.test(text);
+  }
+
   async function handleFormSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (mode === "documents") return;
@@ -129,8 +365,31 @@ export default function HorizonBotPage() {
     const text = input.trim();
     if (!text || isLoading) return;
 
-    await sendMessage({ text }, { body: { mode: "chat" } });
+    const chatMode = isDashboardRequest(text) ? "dashboard" : "chat";
+    await sendMessage({ text }, { body: { mode: chatMode } });
     setInput("");
+  }
+
+  async function handleSyncDatabricks() {
+    if (syncing) return;
+    setSyncing(true);
+    setDocsNotice(null);
+    try {
+      const res = await fetch("/api/sync-databricks", { method: "POST" });
+      const payload = await parseApiResponse(res);
+      if (!res.ok && res.status !== 207)
+        throw new Error(String(payload?.error ?? "Sync failed."));
+      const results = Array.isArray(payload.results) ? payload.results : [];
+      const totalRows = results.reduce(
+        (sum: number, r: { rows?: number }) => sum + (r.rows ?? 0),
+        0
+      );
+      setDocsNotice(`Databricks sync complete. ${totalRows} rows upserted.`);
+    } catch (err) {
+      setDocsNotice(err instanceof Error ? err.message : "Sync failed.");
+    } finally {
+      setSyncing(false);
+    }
   }
 
   async function refreshDocuments() {
@@ -319,6 +578,15 @@ export default function HorizonBotPage() {
                   <button
                     type="button"
                     className="btn-secondary"
+                    onClick={handleSyncDatabricks}
+                    disabled={syncing}
+                    title="Sync data from Databricks into Supabase"
+                  >
+                    {syncing ? "Syncing…" : "Sync Databricks"}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-secondary"
                     onClick={handleIngestSubmit}
                     disabled={ingesting}
                   >
@@ -437,9 +705,13 @@ export default function HorizonBotPage() {
                       )}
                     </div>
                     <div className="message-content">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                        {getMessageText(msg)}
-                      </ReactMarkdown>
+                      {msg.role === "assistant" ? (
+                        <MessageContent text={getMessageText(msg)} />
+                      ) : (
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                          {getMessageText(msg)}
+                        </ReactMarkdown>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -1495,6 +1767,46 @@ export default function HorizonBotPage() {
           padding: 1rem;
           border-radius: 8px;
           font-size: 0.875rem;
+        }
+
+        /* Dashboard */
+        .dashboard-loading {
+          display: flex;
+          align-items: center;
+          padding: 1rem 0;
+        }
+
+        .dashboard-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+          gap: 1rem;
+          margin-top: 0.75rem;
+        }
+
+        .dashboard-card {
+          background: var(--surface);
+          border: 1px solid var(--border);
+          border-radius: 12px;
+          padding: 1rem 1.25rem 1.25rem;
+          display: flex;
+          flex-direction: column;
+          gap: 0.75rem;
+        }
+
+        .dashboard-card-title {
+          font-size: 0.875rem;
+          font-weight: 600;
+          color: var(--text-primary);
+        }
+
+        .dashboard-card-error {
+          font-size: 0.8rem;
+          color: #EF4444;
+        }
+
+        .dashboard-card-empty {
+          font-size: 0.8rem;
+          color: var(--text-tertiary);
         }
 
         /* Responsive */
