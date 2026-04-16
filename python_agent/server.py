@@ -222,7 +222,7 @@ async def chat(req: ChatRequest) -> StreamingResponse:
             yield f"data: {json.dumps(spec.explanation)}\n\n"
             # Emit the dashboard block in the wire format the React frontend expects
             charts_json = json.dumps([c.model_dump() for c in spec.charts])
-            yield f"data: {json.dumps(chr(10) + chr(10) + '<dashboard>' + charts_json + '</dashboard>')}\n\n"
+            yield f"data: {json.dumps('\n\n<dashboard>' + charts_json + '</dashboard>')}\n\n"
             yield "data: [DONE]\n\n"
 
         return StreamingResponse(stream_dashboard(), media_type="text/event-stream")
@@ -298,6 +298,8 @@ def _list_documents(docs_root: Path, uploads_root: Path) -> list[dict]:
             ext = p.suffix.lower()
             if ext not in SUPPORTED_EXTENSIONS:
                 continue
+            # Uploaded files are stored as "<24-char hex id>__<original name>".
+            # This matches the naming scheme used by the Next.js /api/upload route.
             match = re.match(r"^[a-f0-9]{24}__(.+)$", p.name)
             original_name = match.group(1) if match and location == "uploads" else p.name
             docs.append(
@@ -405,6 +407,8 @@ async def alignment(req: AlignmentRequest):
     # 4. Rank
     ranking = rank_similarity_pairs(a_chunks, b_chunks, a_embeddings, b_embeddings)
     preliminary_verdict = derive_preliminary_verdict(ranking)
+    # Weighted confidence: base(0.2) + avg_top_k similarity(55%) +
+    # supported-chunk coverage ratio(25%) + top-pair score(15%).
     confidence = max(
         0.0,
         min(

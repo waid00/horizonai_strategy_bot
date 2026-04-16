@@ -65,7 +65,7 @@ export async function POST(req: NextRequest) {
   // The Python service streams simple SSE: data: <json-encoded-chunk>\n\n
   // createUIMessageStream + createUIMessageStreamResponse converts those text
   // deltas into the Vercel AI SDK UI-message stream protocol expected by useChat().
-  const textId = "response";
+  const messageStreamId = "response";
   const stream = createUIMessageStream({
     execute: async ({ writer }) => {
       if (!pythonResponse.body) return;
@@ -90,7 +90,7 @@ export async function POST(req: NextRequest) {
             if (!line.startsWith("data: ")) continue;
             const data = line.slice(6).trim();
             if (data === "[DONE]") {
-              if (started) writer.write({ type: "text-end", id: textId });
+              if (started) writer.write({ type: "text-end", id: messageStreamId });
               return;
             }
             if (!data) continue;
@@ -104,15 +104,15 @@ export async function POST(req: NextRequest) {
             }
             if (!text) continue;
             if (!started) {
-              writer.write({ type: "text-start", id: textId });
+              writer.write({ type: "text-start", id: messageStreamId });
               started = true;
             }
-            writer.write({ type: "text-delta", id: textId, delta: text });
+            writer.write({ type: "text-delta", id: messageStreamId, delta: text });
           }
         }
       }
 
-      if (started) writer.write({ type: "text-end", id: textId });
+      if (started) writer.write({ type: "text-end", id: messageStreamId });
     },
   });
 

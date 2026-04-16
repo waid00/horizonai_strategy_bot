@@ -66,7 +66,7 @@ async def retrieve_context(
         logger.error("Embedding generation failed: %s", exc)
         return "NO_CONTEXT_AVAILABLE"
 
-    thresholds = [0.35, 0.25, 0.15, 0.0, -1.0]
+    thresholds = [0.35, 0.25, 0.15, 0.0, -1.0]  # -1.0 = theoretical minimum; considers every stored embedding
 
     async with httpx.AsyncClient() as client:
         for threshold in thresholds:

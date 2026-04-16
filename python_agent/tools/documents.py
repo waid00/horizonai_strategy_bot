@@ -83,6 +83,8 @@ def chunk_text(
     Mirrors chunkText() in lib/docs-alignment.js — output must be identical
     so that the existing Node.js tests remain a valid reference.
     """
+    # Cap overlap at 40% of chunk_size so each chunk retains at least 60%
+    # unique content, preventing runaway repetition in small-chunk scenarios.
     overlap = min(overlap, math.floor(chunk_size * 0.4))
     normalized = _normalize_document_text(text)
     paragraphs = [p.strip() for p in re.split(r"\n{2,}", normalized) if p.strip()]
