@@ -63,8 +63,10 @@ function validateSql(sql: string): string | null {
     return "Statement contains forbidden keywords (only pure SELECT is allowed).";
   }
 
-  // No semicolons mid-statement (SQL injection guard)
-  if (/;/.test(trimmed.slice(0, -1))) {
+  // No semicolons allowed anywhere (SQL injection guard).
+  // Strip a single trailing semicolon if present, then reject any remaining ones.
+  const withoutTrailingSemi = trimmed.endsWith(";") ? trimmed.slice(0, -1) : trimmed;
+  if (/;/.test(withoutTrailingSemi)) {
     return "Statement contains a semicolon – multiple statements are not allowed.";
   }
 
@@ -82,8 +84,9 @@ async function runSelectQuery(
   supabase: SupabaseClient,
   sql: string
 ): Promise<Record<string, unknown>[]> {
-  // Append a row cap if not already limited by the LLM
-  const cappedSql = /\bLIMIT\b/i.test(sql) ? sql : `${sql.trimEnd().replace(/;$/, "")} LIMIT 500`;
+  // Strip any trailing semicolon, then append a row cap if the LLM didn't add one.
+  const stripped = sql.trimEnd().replace(/;$/, "");
+  const cappedSql = /\bLIMIT\b/i.test(stripped) ? stripped : `${stripped} LIMIT 500`;
 
   // Supabase JS client doesn't support arbitrary SQL; we use the rpc escape hatch
   // by calling a helper function we create, or fall back to the REST /rest/v1/rpc.

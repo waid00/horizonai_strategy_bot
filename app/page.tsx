@@ -123,6 +123,9 @@ function DashboardBlock({ specs }: { specs: ChartSpec[] }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Stable key derived from the spec content so we only re-fetch when specs change
+  const specsKey = JSON.stringify(specs);
+
   useEffect(() => {
     let cancelled = false;
     async function load() {
@@ -146,8 +149,9 @@ function DashboardBlock({ specs }: { specs: ChartSpec[] }) {
     }
     load();
     return () => { cancelled = true; };
+  // specsKey is a stable primitive derived from specs; it correctly tracks changes
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [specsKey]);
 
   if (loading) {
     return (
