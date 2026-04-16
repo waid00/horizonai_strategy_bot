@@ -53,14 +53,54 @@ interface MatchedDocument {
   similarity: number;
 }
 
+interface SchemaTable {
+  table_name: string;
+  row_count: number;
+  columns: string[];
+}
+
 interface ChatRequestBody {
   messages: Array<{
     role: "user" | "assistant" | "system";
     content?: string;
     parts?: Array<{ type: string; text?: string }>;
   }>;
-  mode?: "chat" | "gap-analysis"; // default: chat
+  mode?: "chat" | "gap-analysis" | "dashboard"; // default: chat
   externalText?: string;          // only used in gap-analysis mode
+}
+
+// ─── Schema Fetch ─────────────────────────────────────────────────────────────
+
+async function fetchDataSchema(): Promise<SchemaTable[]> {
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!supabaseUrl || !serviceRoleKey) return [];
+
+  try {
+    const { data: samples } = await getSupabase()
+      .from("data_records")
+      .select("table_name, row_data")
+      .limit(1000);
+
+    if (!samples || samples.length === 0) return [];
+
+    // Group by table_name
+    const tableMap = new Map<string, Record<string, unknown>[]>();
+    for (const row of samples) {
+      const tbl = row.table_name as string;
+      if (!tableMap.has(tbl)) tableMap.set(tbl, []);
+      tableMap.get(tbl)!.push(row.row_data as Record<string, unknown>);
+    }
+
+    const tables: SchemaTable[] = [];
+    for (const [tableName, rows] of tableMap.entries()) {
+      const columns = rows.length > 0 ? Object.keys(rows[0]) : [];
+      tables.push({ table_name: tableName, row_count: rows.length, columns });
+    }
+    return tables;
+  } catch {
+    return [];
+  }
 }
 
 function extractMessageText(message: ChatRequestBody["messages"][number]): string {
@@ -179,7 +219,8 @@ async function retrieveContextWithFallback(query: string): Promise<MatchedDocume
  */
 function buildSystemPrompt(
   retrievedChunks: MatchedDocument[],
-  mode: "chat" | "gap-analysis"
+  mode: "chat" | "gap-analysis" | "dashboard",
+  schema?: SchemaTable[]
 ): string {
   const contextBlock =
     retrievedChunks.length > 0
@@ -209,6 +250,19 @@ RESPONSE GUIDELINES:
 RESPONSE FORMAT (Gap Analysis mode):
 Always respond with a structured markdown table with exactly these columns: Domain | Current State | Target State | Gap | Recommendation
 Produce one row per domain or KPI that is relevant.`
+      : mode === "dashboard"
+      ? `
+RESPONSE FORMAT (Dashboard mode):
+You MUST respond with a brief natural-language explanation followed by a machine-readable dashboard block.
+The dashboard block MUST use this exact format (no extra whitespace inside the tags):
+<dashboard>[{"title":"Chart Title","type":"bar","sql":"SELECT ..."},{"title":"Chart 2","type":"line","sql":"SELECT ..."}]</dashboard>
+Rules for the SQL inside the block:
+- Each SQL must be a single SELECT statement.
+- Queries MUST reference the data_records table.
+- Use the pattern: SELECT row_data->>'column_name' AS column_name, ... FROM data_records WHERE table_name = '<table>' LIMIT 50
+- Supported chart types: bar, line, pie, table
+- Maximum 6 charts per dashboard.
+- Do NOT include semicolons.`
       : `
 RESPONSE FORMAT (Standard Query mode):
 Choose the most appropriate format for the question:
@@ -226,6 +280,30 @@ Your task:
   b. For each relevant area, give a clear verdict: does the external text align with Horizon Bank's strategy, or not? Explain why with specific references to the context.
   c. Identify specific gaps where the external text falls short of Horizon Bank standards, and note where it already aligns.
   d. Current State column = external text claims; Target State column = Horizon Bank documentation.`
+      : mode === "dashboard"
+      ? (() => {
+          const schemaBlock =
+            schema && schema.length > 0
+              ? schema
+                  .map(
+                    (t) =>
+                      `Table: "${t.table_name}" (${t.row_count} rows)\nColumns: ${t.columns.join(", ")}`
+                  )
+                  .join("\n\n")
+              : "No data tables are currently synced. Inform the user that they need to run the Databricks sync first.";
+
+          return `
+DASHBOARD MODE:
+The user wants a visual dashboard based on the synced Databricks data.
+Your task:
+  a. Understand what the user wants to visualise.
+  b. Use the AVAILABLE DATA SCHEMA below to write SQL queries.
+  c. Output a brief explanation (2–3 sentences) and then the <dashboard> block.
+  d. Each chart SQL must be a valid SELECT against data_records (see RESPONSE FORMAT).
+
+AVAILABLE DATA SCHEMA:
+${schemaBlock}`;
+        })()
       : `
 STANDARD QUERY MODE:
 Answer the user's question directly and helpfully using the CONTEXT DOCUMENTS.
@@ -264,6 +342,8 @@ export async function POST(req: NextRequest) {
     const body: ChatRequestBody = await req.json();
     const { messages, mode = "chat", externalText } = body;
 
+    // For dashboard mode, fetch the data schema to inject into the prompt
+    const dataSchema: SchemaTable[] = mode === "dashboard" ? await fetchDataSchema() : [];
     if (!messages || messages.length === 0) {
       return new Response(JSON.stringify({ error: "messages array is required" }), {
         status: 400,
@@ -329,7 +409,7 @@ export async function POST(req: NextRequest) {
     }
 
     // ── Step 2: Build system prompt with injected context ─────────────────
-    const systemPrompt = buildSystemPrompt(retrievedChunks, mode);
+    const systemPrompt = buildSystemPrompt(retrievedChunks, mode, dataSchema);
 
     // Augment the last user message with external text for gap-analysis
     const augmentedMessages =

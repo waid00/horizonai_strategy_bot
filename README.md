@@ -30,6 +30,12 @@ OPENAI_API_KEY=sk-proj-...
 SUPABASE_URL=https://xxxxxxxxxxxx.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=eyJ...     # service_role secret (NOT the publishable/anon key)
 NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJ...  # anon public key
+
+# Databricks (required for dashboard / data sync feature)
+DATABRICKS_HOST=https://adb-1234567890.1.azuredatabricks.net
+DATABRICKS_TOKEN=dapi...              # personal access token or service-principal token
+DATABRICKS_WAREHOUSE_ID=abc123def456  # SQL Warehouse ID (Databricks SQL → Warehouses)
+DATABRICKS_TABLES=hive_metastore.default.kpis,catalog.schema.metrics  # comma-separated
 ```
 
 > ⚠ **`SUPABASE_SERVICE_ROLE_KEY` must be the `service_role` secret key** from  
@@ -43,6 +49,7 @@ Open the [Supabase SQL Editor](https://supabase.com/dashboard) for your project 
 - The `documents` table with `content TEXT`, `embedding VECTOR(1536)`, and `metadata JSONB` columns
 - An HNSW index for fast vector search
 - The `match_documents` RPC function used by the API
+- The `data_records` table for Databricks-synced tabular data (used by the dashboard feature)
 - RLS policies that allow the service-role key full access
 
 Verify the setup:
@@ -194,17 +201,21 @@ In Next.js, server-side env vars (without `NEXT_PUBLIC_` prefix) must be in `.en
 horizonai_strategy_bot/
 ├── app/
 │   ├── api/
-│   │   ├── chat/route.ts      # RAG pipeline: embed → retrieve → stream
-│   │   ├── health/route.ts    # Diagnostic endpoint
-│   │   ├── upload/route.ts    # Upload + list runtime docs
-│   │   └── ingest/route.ts    # Trigger ingest from docs + uploads
+│   │   ├── chat/route.ts           # RAG pipeline: embed → retrieve → stream
+│   │   ├── dashboard/route.ts      # Execute LLM-generated SQL safely
+│   │   ├── health/route.ts         # Diagnostic endpoint
+│   │   ├── schema/route.ts         # Return data_records schema for LLM
+│   │   ├── sync-databricks/route.ts # Trigger Databricks → Supabase sync
+│   │   ├── upload/route.ts         # Upload + list runtime docs
+│   │   └── ingest/route.ts         # Trigger ingest from docs + uploads
 │   ├── layout.tsx
 │   └── page.tsx               # Chat UI
 ├── data/
 │   └── uploads/               # Runtime user uploads (gitignored)
 ├── scripts/
 │   ├── ingest.mjs             # Embed and store documents in Supabase
-│   └── probe-rpc.mjs          # Test the full RAG retrieval pipeline
+│   ├── probe-rpc.mjs          # Test the full RAG retrieval pipeline
+│   └── sync-databricks.mjs    # Sync Databricks tables → data_records in Supabase
 ├── supabase/
 │   └── schema.sql             # pgvector table + match_documents RPC + RLS
 ├── deployment.md              # Full deployment reference (Vercel + Supabase)
@@ -219,6 +230,13 @@ horizonai_strategy_bot/
 |------|-------------|
 | **Query Mode** | Ask questions about Horizon Bank strategy, KPIs, architecture |
 | **Gap Analysis** | Paste external strategy text; the bot compares it against internal Horizon Bank documents |
+| **Dashboard Mode** | Ask to "show a dashboard" or "chart the KPIs" — the bot generates SQL queries, executes them against synced Databricks data, and renders interactive Recharts charts inline in the chat |
+
+### Dashboard workflow
+
+1. Add `DATABRICKS_*` env vars to `.env.local`.
+2. Run `npm run sync-databricks` (or click **Sync Databricks** in the Documents tab) to pull data into the `data_records` Supabase table.
+3. In the chat, ask e.g. _"Create a dashboard showing the top 10 KPIs"_ — the bot auto-detects the dashboard intent and renders charts in the reply.
 
 ---
 
@@ -228,4 +246,6 @@ horizonai_strategy_bot/
 - **Vercel AI SDK** (`ai`, `@ai-sdk/openai`, `@ai-sdk/react`) for streaming
 - **OpenAI** `gpt-4o` for responses, `text-embedding-3-small` for embeddings
 - **Supabase** with `pgvector` for vector search via `match_documents` RPC
+- **Databricks SQL Statement API** for fetching tabular data
+- **Recharts** for rendering inline bar / line / pie / table charts in the chat
 - **React Markdown** + `remark-gfm` for rendering table responses
