@@ -145,39 +145,179 @@ async function fetchTableRows(
 
 const BATCH_SIZE = 500;
 
+/**
+ * Map Databricks table to gold schema table based on naming patterns.
+ */
+function mapTableToGold(tableName: string, rows: Record<string, unknown>[]) {
+  const lower = tableName.toLowerCase();
+  console.log(`[Sync] Attempting to map table: "${tableName}" (lower: "${lower}")`);
+
+  if (lower.includes("team")) {
+    console.log(`[Sync] ✓ Matched "team" pattern → gold_dim_team`);
+    return {
+      type: "team",
+      table: "gold_dim_team",
+      data: rows.map((row) => ({
+        team_id: String(row.team_id || row.id || "").trim(),
+        team_name: String(row.team_name || row.name || "").trim(),
+        domain: String(row.domain || row.dept || "").trim(),
+      })),
+    };
+  }
+
+  if (lower.includes("kpi")) {
+    console.log(`[Sync] ✓ Matched "kpi" pattern → gold_dim_kpi`);
+    return {
+      type: "kpi",
+      table: "gold_dim_kpi",
+      data: rows.map((row) => ({
+        kpi_id: String(row.kpi_id || row.id || "").trim(),
+        kpi_name: String(row.kpi_name || row.name || "").trim(),
+        kpi_type: String(row.kpi_type || row.type || "").trim(),
+        target_value: parseFloat(String(row.target_value ?? row.target ?? 0)),
+        initial_value: parseFloat(String(row.initial_value ?? row.initial ?? 0)),
+        unit: String(row.unit || "").trim(),
+      })),
+    };
+  }
+
+  if (lower.includes("period")) {
+    console.log(`[Sync] ✓ Matched "period" pattern → gold_dim_period`);
+    return {
+      type: "period",
+      table: "gold_dim_period",
+      data: rows.map((row) => ({
+        period_id: String(row.period_id || row.id || "").trim(),
+        period: String(row.period || "").trim(),
+        quarter: String(row.quarter || "Q1").trim(),
+        year: parseInt(String(row.year ?? new Date().getFullYear())),
+      })),
+    };
+  }
+
+  if (lower.includes("fact") || lower.includes("metric")) {
+    console.log(`[Sync] ✓ Matched "fact/metric" pattern → gold_fact_kpi`);
+    return {
+      type: "fact",
+      table: "gold_fact_kpi",
+      data: rows.map((row) => ({
+        period_id: String(row.period_id || "").trim(),
+        kpi_id: String(row.kpi_id || "").trim(),
+        team_id: String(row.team_id || "").trim(),
+        value: parseFloat(String(row.value ?? 0)),
+        dq_flag: String(row.dq_flag || row.quality_flag || "").trim(),
+      })),
+    };
+  }
+
+  console.log(`[Sync] ✗ No pattern matched → falling back to data_records`);
+  // Default: data_records
+  return {
+    type: "data_records",
+    table: "data_records",
+    data: rows,
+  };
+}
+
 async function syncTableToSupabase(
   supabase: SupabaseClient,
   tableName: string,
   rows: Record<string, unknown>[]
-): Promise<number> {
-  const { error: deleteError } = await supabase
-    .from("data_records")
-    .delete()
-    .eq("table_name", tableName);
+): Promise<{ goldTable: string; type: string; rowsUpserted: number }> {
+  const mapping = mapTableToGold(tableName, rows);
 
-  if (deleteError) {
-    throw new Error(
-      `Supabase delete error for ${tableName}: ${deleteError.message}`
-    );
+  if (mapping.type === "data_records") {
+    // Legacy: delete and re-insert into data_records
+    const { error: deleteError } = await supabase
+      .from("data_records")
+      .delete()
+      .eq("table_name", tableName);
+
+    if (deleteError) {
+      throw new Error(
+        `Supabase delete error for ${tableName}: ${deleteError.message}`
+      );
+    }
+
+    let inserted = 0;
+    const now = new Date().toISOString();
+
+    for (let i = 0; i < rows.length; i += BATCH_SIZE) {
+      const batch = rows.slice(i, i + BATCH_SIZE).map((row) => ({
+        table_name: tableName,
+        row_data: row,
+        synced_at: now,
+      }));
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const { error } = await supabase.from("data_records").insert(batch as any);
+      if (error) throw new Error(`Supabase insert error: ${error.message}`);
+      inserted += batch.length;
+    }
+
+    return {
+      goldTable: "data_records",
+      type: "data_records",
+      rowsUpserted: inserted,
+    };
   }
 
-  let inserted = 0;
-  const now = new Date().toISOString();
+  // Gold tables: upsert
+  const goldTable = mapping.table;
+  const goldData = mapping.data.filter((row) => {
+    if (mapping.type === "fact") {
+      const fr = row as Record<string, unknown>;
+      const valid = !!(fr.period_id && fr.kpi_id && fr.team_id);
+      if (!valid) {
+        console.log(`[Sync] Filtering fact row: missing keys. period_id=${fr.period_id}, kpi_id=${fr.kpi_id}, team_id=${fr.team_id}`);
+      }
+      return valid;
+    }
+    const r = row as Record<string, unknown>;
+    const valid = !!(r[`${mapping.type}_id`] || r.id);
+    if (!valid) {
+      console.log(`[Sync] Filtering ${mapping.type} row: missing ${mapping.type}_id or id`);
+    }
+    return valid;
+  });
 
-  for (let i = 0; i < rows.length; i += BATCH_SIZE) {
-    const batch = rows.slice(i, i + BATCH_SIZE).map((row) => ({
-      table_name: tableName,
-      row_data: row,
-      synced_at: now,
-    }));
+  console.log(`[Sync] After validation: ${goldData.length}/${mapping.data.length} rows pass for ${goldTable}`);
+
+  if (goldData.length === 0) {
+    console.log(`[Sync] ⚠️  No valid rows to insert into ${goldTable}`);
+    return { goldTable, type: mapping.type, rowsUpserted: 0 };
+  }
+
+  // Determine the correct conflict column(s) for this table
+  let conflictColumns = "id"; // default fallback
+  if (mapping.type === "team") conflictColumns = "team_id";
+  else if (mapping.type === "kpi") conflictColumns = "kpi_id";
+  else if (mapping.type === "period") conflictColumns = "period_id";
+  else if (mapping.type === "fact") conflictColumns = "period_id,kpi_id,team_id";
+
+  console.log(`[Sync] Upserting into ${goldTable} with onConflict: "${conflictColumns}"`);
+
+  let upserted = 0;
+  for (let i = 0; i < goldData.length; i += BATCH_SIZE) {
+    const batch = goldData.slice(i, i + BATCH_SIZE);
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const { error } = await supabase.from("data_records").insert(batch as any);
-    if (error) throw new Error(`Supabase insert error: ${error.message}`);
-    inserted += batch.length;
+    const { error } = await supabase
+      .from(goldTable)
+      .upsert(batch as any, {
+        onConflict: conflictColumns,
+      });
+
+    if (error) {
+      console.error(`[Sync] ❌ Upsert error for ${goldTable}: ${error.message}`);
+      throw new Error(`Upsert error for ${goldTable}: ${error.message}`);
+    }
+    upserted += batch.length;
+    console.log(`[Sync] Upserted batch: ${batch.length} rows (total: ${upserted})`);
   }
 
-  return inserted;
+  console.log(`[Sync] ✅ Successfully upserted ${upserted} rows into ${goldTable}`);
+  return { goldTable, type: mapping.type, rowsUpserted: upserted };
 }
 
 // ─── Route handler ────────────────────────────────────────────────────────────
@@ -224,6 +364,8 @@ export async function POST(req: NextRequest) {
 
     const results: Array<{
       table: string;
+      goldTable?: string;
+      type?: string;
       rows?: number;
       error?: string;
     }> = [];
@@ -236,15 +378,30 @@ export async function POST(req: NextRequest) {
           warehouseId,
           tableName
         );
-        const inserted = rows.length > 0
-          ? await syncTableToSupabase(supabase, tableName, rows)
-          : 0;
-        results.push({ table: tableName, rows: inserted });
+        console.log(`[Sync] Fetched ${rows.length} rows from "${tableName}"`);
+        
+        if (rows.length === 0) {
+          console.log(`[Sync] Skipping "${tableName}" – no rows`);
+          results.push({ table: tableName, rows: 0 });
+          continue;
+        }
+
+        const syncResult = await syncTableToSupabase(supabase, tableName, rows);
+        console.log(`[Sync] ✅ Synced "${tableName}" → ${syncResult.goldTable} (type: ${syncResult.type}, rows: ${syncResult.rowsUpserted})`);
+        results.push({
+          table: tableName,
+          goldTable: syncResult.goldTable,
+          type: syncResult.type,
+          rows: syncResult.rowsUpserted,
+        });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        console.error(`[Sync] ❌ Failed to sync "${tableName}": ${message}`);
         results.push({ table: tableName, error: message });
       }
     }
+
+    console.log(`[Sync] Results:`, JSON.stringify(results, null, 2));
 
     const hasErrors = results.some((r) => r.error !== undefined);
     return NextResponse.json(

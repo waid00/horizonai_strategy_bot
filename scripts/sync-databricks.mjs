@@ -147,36 +147,149 @@ async function fetchTableRows(tableName) {
   return rows;
 }
 
-// ─── Supabase upsert ──────────────────────────────────────────────────────────
+// ─── Table Mapping & Upsert ──────────────────────────────────────────────────
 
 const UPSERT_BATCH = 500;
 
+/**
+ * Determine which gold table(s) this Databricks table maps to.
+ * Returns { type: 'team'|'kpi'|'period'|'fact', data: processedRows }
+ */
+function mapTableToGold(tableName, rows) {
+  const lower = tableName.toLowerCase();
+
+  // Map based on table name patterns
+  if (lower.includes("team")) {
+    return {
+      type: "team",
+      table: "gold_dim_team",
+      data: rows.map((row) => ({
+        team_id: String(row.team_id || row.id || "").trim(),
+        team_name: String(row.team_name || row.name || "").trim(),
+        domain: String(row.domain || row.dept || "").trim(),
+      })),
+    };
+  }
+
+  if (lower.includes("kpi")) {
+    return {
+      type: "kpi",
+      table: "gold_dim_kpi",
+      data: rows.map((row) => ({
+        kpi_id: String(row.kpi_id || row.id || "").trim(),
+        kpi_name: String(row.kpi_name || row.name || "").trim(),
+        kpi_type: String(row.kpi_type || row.type || "").trim(),
+        target_value: parseFloat(row.target_value ?? row.target ?? 0),
+        initial_value: parseFloat(row.initial_value ?? row.initial ?? 0),
+        unit: String(row.unit || "").trim(),
+      })),
+    };
+  }
+
+  if (lower.includes("period")) {
+    return {
+      type: "period",
+      table: "gold_dim_period",
+      data: rows.map((row) => ({
+        period_id: String(row.period_id || row.id || "").trim(),
+        period: String(row.period || "").trim(),
+        quarter: String(row.quarter || "Q1").trim(),
+        year: parseInt(row.year ?? new Date().getFullYear()),
+      })),
+    };
+  }
+
+  if (lower.includes("fact") || lower.includes("metric")) {
+    return {
+      type: "fact",
+      table: "gold_fact_kpi",
+      data: rows.map((row) => ({
+        period_id: String(row.period_id || "").trim(),
+        kpi_id: String(row.kpi_id || "").trim(),
+        team_id: String(row.team_id || "").trim(),
+        value: parseFloat(row.value ?? 0),
+        dq_flag: String(row.dq_flag || row.quality_flag || "").trim(),
+      })),
+    };
+  }
+
+  // Default: just store in data_records
+  return {
+    type: "data_records",
+    table: "data_records",
+    data: rows,
+  };
+}
+
 async function upsertRows(tableName, rows) {
-  // Delete existing rows for this table so we get a clean full refresh.
-  const { error: deleteError } = await supabase
-    .from("data_records")
-    .delete()
-    .eq("table_name", tableName);
+  const mapping = mapTableToGold(tableName, rows);
 
-  if (deleteError) {
-    throw new Error(`Supabase delete error for ${tableName}: ${deleteError.message}`);
-  }
+  if (mapping.type === "data_records") {
+    // Legacy: Delete existing rows for this table
+    const { error: deleteError } = await supabase
+      .from("data_records")
+      .delete()
+      .eq("table_name", tableName);
 
-  let inserted = 0;
-  for (let i = 0; i < rows.length; i += UPSERT_BATCH) {
-    const batch = rows.slice(i, i + UPSERT_BATCH).map((row) => ({
-      table_name: tableName,
-      row_data: row,
-      synced_at: new Date().toISOString(),
-    }));
-
-    const { error } = await supabase.from("data_records").insert(batch);
-    if (error) {
-      throw new Error(`Supabase insert error: ${error.message}`);
+    if (deleteError) {
+      throw new Error(`Supabase delete error for ${tableName}: ${deleteError.message}`);
     }
-    inserted += batch.length;
+
+    let inserted = 0;
+    for (let i = 0; i < rows.length; i += UPSERT_BATCH) {
+      const batch = rows.slice(i, i + UPSERT_BATCH).map((row) => ({
+        table_name: tableName,
+        row_data: row,
+        synced_at: new Date().toISOString(),
+      }));
+
+      const { error } = await supabase.from("data_records").insert(batch);
+      if (error) {
+        throw new Error(`Supabase insert error: ${error.message}`);
+      }
+      inserted += batch.length;
+    }
+    return inserted;
   }
-  return inserted;
+
+  // Gold tables: upsert (handle duplicates gracefully)
+  const goldTable = mapping.table;
+  const goldData = mapping.data.filter((row) => {
+    // Validate required IDs exist
+    if (mapping.type === "fact") {
+      return row.period_id && row.kpi_id && row.team_id;
+    }
+    return row[`${mapping.type}_id`] || row.id;
+  });
+
+  if (goldData.length === 0) {
+    console.log(`  ⚠️   No valid rows to insert into ${goldTable}`);
+    return 0;
+  }
+
+  // Determine the correct conflict column(s) for this table
+  let conflictColumns = "id"; // default fallback
+  if (mapping.type === "team") conflictColumns = "team_id";
+  else if (mapping.type === "kpi") conflictColumns = "kpi_id";
+  else if (mapping.type === "period") conflictColumns = "period_id";
+  else if (mapping.type === "fact") conflictColumns = "period_id,kpi_id,team_id";
+
+  let upserted = 0;
+  for (let i = 0; i < goldData.length; i += UPSERT_BATCH) {
+    const batch = goldData.slice(i, i + UPSERT_BATCH);
+
+    const { error } = await supabase
+      .from(goldTable)
+      .upsert(batch, { onConflict: conflictColumns });
+
+    if (error) {
+      console.warn(`  ⚠️   Upsert error for ${goldTable}: ${error.message}`);
+      throw new Error(`Upsert error for ${goldTable}: ${error.message}`);
+    }
+    upserted += batch.length;
+  }
+
+  return upserted;
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
@@ -197,6 +310,7 @@ async function main() {
   console.log(`📋  Tables to sync: ${tables.join(", ")}\n`);
 
   let totalRows = 0;
+  const results = [];
 
   for (const tableName of tables) {
     try {
@@ -208,15 +322,30 @@ async function main() {
         continue;
       }
 
-      const inserted = await upsertRows(tableName, rows);
-      console.log(`  💾  Upserted ${inserted} rows into data_records for table "${tableName}"\n`);
-      totalRows += inserted;
+      const upserted = await upsertRows(tableName, rows);
+      const mapping = mapTableToGold(tableName, rows);
+      const targetTable = mapping.type === "data_records" ? "data_records" : `${mapping.table} (${mapping.type})`;
+      
+      console.log(`  💾  Upserted ${upserted} rows into ${targetTable}\n`);
+      results.push({
+        table: tableName,
+        type: mapping.type,
+        goldTable: mapping.table,
+        rowsUpserted: upserted,
+      });
+      totalRows += upserted;
     } catch (err) {
       console.error(`  ❌  Failed to sync ${tableName}: ${err.message}`);
     }
   }
 
-  console.log(`🎉  Sync complete. Total rows upserted: ${totalRows}`);
+  console.log("\n📊  Sync Summary:");
+  for (const r of results) {
+    const icon = r.type === "data_records" ? "📦" : "✨";
+    console.log(`  ${icon} ${r.table} → ${r.goldTable} (${r.rowsUpserted} rows)`);
+  }
+
+  console.log(`\n🎉  Sync complete. Total rows upserted: ${totalRows}`);
 }
 
 main().catch((err) => {
