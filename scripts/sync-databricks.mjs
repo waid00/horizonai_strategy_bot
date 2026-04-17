@@ -154,9 +154,25 @@ const UPSERT_BATCH = 500;
 /**
  * Determine which gold table(s) this Databricks table maps to.
  * Returns { type: 'team'|'kpi'|'period'|'fact', data: processedRows }
+ * Order matters: check more specific patterns first (fact/metric before kpi).
  */
 function mapTableToGold(tableName, rows) {
   const lower = tableName.toLowerCase();
+
+  // Check for fact/metric FIRST (more specific, contains "kpi" in the name)
+  if (lower.includes("fact") || lower.includes("metric")) {
+    return {
+      type: "fact",
+      table: "gold_fact_kpi",
+      data: rows.map((row) => ({
+        period_id: String(row.period_id || "").trim(),
+        kpi_id: String(row.kpi_id || "").trim(),
+        team_id: String(row.team_id || "").trim(),
+        value: parseFloat(row.value ?? 0),
+        dq_flag: String(row.dq_flag || row.quality_flag || "").trim(),
+      })),
+    };
+  }
 
   // Map based on table name patterns
   if (lower.includes("team")) {
@@ -195,20 +211,6 @@ function mapTableToGold(tableName, rows) {
         period: String(row.period || "").trim(),
         quarter: String(row.quarter || "Q1").trim(),
         year: parseInt(row.year ?? new Date().getFullYear()),
-      })),
-    };
-  }
-
-  if (lower.includes("fact") || lower.includes("metric")) {
-    return {
-      type: "fact",
-      table: "gold_fact_kpi",
-      data: rows.map((row) => ({
-        period_id: String(row.period_id || "").trim(),
-        kpi_id: String(row.kpi_id || "").trim(),
-        team_id: String(row.team_id || "").trim(),
-        value: parseFloat(row.value ?? 0),
-        dq_flag: String(row.dq_flag || row.quality_flag || "").trim(),
       })),
     };
   }

@@ -147,10 +147,27 @@ const BATCH_SIZE = 500;
 
 /**
  * Map Databricks table to gold schema table based on naming patterns.
+ * Order matters: check more specific patterns first (fact/metric before kpi).
  */
 function mapTableToGold(tableName: string, rows: Record<string, unknown>[]) {
   const lower = tableName.toLowerCase();
   console.log(`[Sync] Attempting to map table: "${tableName}" (lower: "${lower}")`);
+
+  // Check for fact/metric FIRST (more specific, contains "kpi" in the name)
+  if (lower.includes("fact") || lower.includes("metric")) {
+    console.log(`[Sync] ✓ Matched "fact/metric" pattern → gold_fact_kpi`);
+    return {
+      type: "fact",
+      table: "gold_fact_kpi",
+      data: rows.map((row) => ({
+        period_id: String(row.period_id || "").trim(),
+        kpi_id: String(row.kpi_id || "").trim(),
+        team_id: String(row.team_id || "").trim(),
+        value: parseFloat(String(row.value ?? 0)),
+        dq_flag: String(row.dq_flag || row.quality_flag || "").trim(),
+      })),
+    };
+  }
 
   if (lower.includes("team")) {
     console.log(`[Sync] ✓ Matched "team" pattern → gold_dim_team`);
@@ -191,21 +208,6 @@ function mapTableToGold(tableName: string, rows: Record<string, unknown>[]) {
         period: String(row.period || "").trim(),
         quarter: String(row.quarter || "Q1").trim(),
         year: parseInt(String(row.year ?? new Date().getFullYear())),
-      })),
-    };
-  }
-
-  if (lower.includes("fact") || lower.includes("metric")) {
-    console.log(`[Sync] ✓ Matched "fact/metric" pattern → gold_fact_kpi`);
-    return {
-      type: "fact",
-      table: "gold_fact_kpi",
-      data: rows.map((row) => ({
-        period_id: String(row.period_id || "").trim(),
-        kpi_id: String(row.kpi_id || "").trim(),
-        team_id: String(row.team_id || "").trim(),
-        value: parseFloat(String(row.value ?? 0)),
-        dq_flag: String(row.dq_flag || row.quality_flag || "").trim(),
       })),
     };
   }
