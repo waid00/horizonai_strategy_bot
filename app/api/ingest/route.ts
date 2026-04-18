@@ -142,7 +142,7 @@ function parseCsvRow(row: string, delimiter = ","): string[] {
 }
 
 /**
- * Converts CSV text into a human-readable, semantically rich format so that
+ * Converts CSV text into self-contained natural language sentences so that
  * embeddings capture the relationship between column names and their values.
  *
  * Automatically detects the delimiter (tab, semicolon, or comma) from the
@@ -155,8 +155,8 @@ function parseCsvRow(row: string, delimiter = ","): string[] {
  *   Cost-to-Income;60%;40%
  *
  * Example output:
- *   KPI: Active Digital Clients | Current State: 55% | Target State: 80%
- *   KPI: Cost-to-Income | Current State: 60% | Target State: 40%
+ *   KPI 'Active Digital Clients': Current State is 55%, Target State is 80%.
+ *   KPI 'Cost-to-Income': Current State is 60%, Target State is 40%.
  */
 function csvToDescriptiveText(csvContent: string): string {
   const lines = csvContent
@@ -179,19 +179,34 @@ function csvToDescriptiveText(csvContent: string): string {
     const values = parseCsvRow(lines[i], delimiter);
     if (values.length === 0) continue;
 
-    // Build "Header: Value" pairs; skip pairs where the value is empty
-    const pairs: string[] = [];
+    // Collect non-empty header/value pairs for this row
+    const pairs: Array<{ header: string; value: string }> = [];
     for (let col = 0; col < headers.length; col++) {
       const header = headers[col].trim();
       const value = (values[col] ?? "").trim();
       if (header && value) {
-        pairs.push(`${header}: ${value}`);
+        pairs.push({ header, value });
       }
     }
 
-    if (pairs.length > 0) {
-      rows.push(pairs.join(" | "));
+    if (pairs.length === 0) continue;
+
+    // Generate a natural language sentence:
+    //   "[header0] '[value0]': [header1] is [value1], [header2] is [value2]."
+    // When there is only one column, emit "header: value".
+    let sentence: string;
+    if (pairs.length === 1) {
+      sentence = `${pairs[0].header}: ${pairs[0].value}.`;
+    } else {
+      const subject = `${pairs[0].header} '${pairs[0].value}'`;
+      const predicates = pairs
+        .slice(1)
+        .map((p) => `${p.header} is ${p.value}`)
+        .join(", ");
+      sentence = `${subject}: ${predicates}.`;
     }
+
+    rows.push(sentence);
   }
 
   return rows.length > 0 ? rows.join("\n") : csvContent;
