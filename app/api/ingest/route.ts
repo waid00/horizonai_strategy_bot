@@ -96,9 +96,26 @@ async function getMammothExtractRawText() {
 }
 
 /**
- * Parses a single CSV row, handling double-quoted fields that may contain commas.
+ * Detects the field delimiter used in a CSV file by inspecting the first line.
+ * Preference order: tab → semicolon → comma.
+ * European CSV exports (e.g. Czech locale) commonly use semicolons; tab-separated
+ * exports are also frequent.  Comma is the fallback for standard RFC 4180 files.
  */
-function parseCsvRow(row: string): string[] {
+function detectCsvDelimiter(firstLine: string): string {
+  const tabCount = (firstLine.match(/\t/g) ?? []).length;
+  const semicolonCount = (firstLine.match(/;/g) ?? []).length;
+  const commaCount = (firstLine.match(/,/g) ?? []).length;
+
+  if (tabCount > 0 && tabCount >= semicolonCount && tabCount >= commaCount) return "\t";
+  if (semicolonCount > 0 && semicolonCount >= commaCount) return ";";
+  return ",";
+}
+
+/**
+ * Parses a single CSV row using the given delimiter, handling double-quoted
+ * fields that may contain the delimiter character or newlines.
+ */
+function parseCsvRow(row: string, delimiter = ","): string[] {
   const result: string[] = [];
   let current = "";
   let inQuotes = false;
@@ -113,7 +130,7 @@ function parseCsvRow(row: string): string[] {
       } else {
         inQuotes = !inQuotes;
       }
-    } else if (char === "," && !inQuotes) {
+    } else if (char === delimiter && !inQuotes) {
       result.push(current.trim());
       current = "";
     } else {
@@ -128,14 +145,18 @@ function parseCsvRow(row: string): string[] {
  * Converts CSV text into a human-readable, semantically rich format so that
  * embeddings capture the relationship between column names and their values.
  *
- * Example input:
- *   Metric,Current,Target
- *   Active Digital Clients,55%,80%
- *   Cost-to-Income,60%,40%
+ * Automatically detects the delimiter (tab, semicolon, or comma) from the
+ * first non-empty line so the function works with standard CSV, European
+ * semicolon-separated, and tab-separated exports alike.
+ *
+ * Example input (semicolon-delimited):
+ *   KPI;Current State;Target State
+ *   Active Digital Clients;55%;80%
+ *   Cost-to-Income;60%;40%
  *
  * Example output:
- *   Active Digital Clients | Current: 55% | Target: 80%
- *   Cost-to-Income | Current: 60% | Target: 40%
+ *   KPI: Active Digital Clients | Current State: 55% | Target State: 80%
+ *   KPI: Cost-to-Income | Current State: 60% | Target State: 40%
  */
 function csvToDescriptiveText(csvContent: string): string {
   const lines = csvContent
@@ -148,20 +169,21 @@ function csvToDescriptiveText(csvContent: string): string {
     return csvContent;
   }
 
-  const headers = parseCsvRow(lines[0]);
+  const delimiter = detectCsvDelimiter(lines[0]);
+  const headers = parseCsvRow(lines[0], delimiter);
   if (headers.length === 0) return csvContent;
 
   const rows: string[] = [];
 
   for (let i = 1; i < lines.length; i++) {
-    const values = parseCsvRow(lines[i]);
+    const values = parseCsvRow(lines[i], delimiter);
     if (values.length === 0) continue;
 
     // Build "Header: Value" pairs; skip pairs where the value is empty
     const pairs: string[] = [];
     for (let col = 0; col < headers.length; col++) {
-      const header = headers[col];
-      const value = values[col] ?? "";
+      const header = headers[col].trim();
+      const value = (values[col] ?? "").trim();
       if (header && value) {
         pairs.push(`${header}: ${value}`);
       }
@@ -244,20 +266,33 @@ async function loadDocument(fullPath: string, sourceLabel: string): Promise<Load
       content = await fs.readFile(fullPath, "utf-8");
     }
 
-    const rawNormalized = content
-      .replace(/\r\n/g, "\n")
-      .replace(/\t/g, " ")
-      .replace(/[ ]{2,}/g, " ")
-      .replace(/\n{3,}/g, "\n\n")
-      .trim();
-
-    // CSV files are converted to human-readable key-value prose so that
-    // embeddings capture the relationship between column headers and values
-    // (e.g. "Active Digital Clients | Current: 55% | Target: 80%").
-    // Plain comma-separated rows produce poor embeddings because the values
-    // are semantically disconnected from their column names.
-    const normalized =
-      extension === ".csv" ? csvToDescriptiveText(rawNormalized) : rawNormalized;
+    // For CSV files we must preserve tab characters until after the CSV-to-prose
+    // conversion, because tab is a valid field delimiter in many European exports.
+    // Collapsing tabs to spaces first would make tab-delimited files unparseable.
+    let normalized: string;
+    if (extension === ".csv") {
+      // Step 1: normalise line endings only (keep tabs).
+      const csvRaw = content
+        .replace(/\r\n/g, "\n")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
+      // Step 2: convert CSV to human-readable key-value prose so that embeddings
+      // capture the relationship between column headers and values
+      // (e.g. "KPI: Active Digital Clients | Current State: 55% | Target State: 80%").
+      const csvProse = csvToDescriptiveText(csvRaw);
+      // Step 3: apply whitespace normalisation to the resulting prose.
+      normalized = csvProse
+        .replace(/\t/g, " ")
+        .replace(/[ ]{2,}/g, " ")
+        .trim();
+    } else {
+      normalized = content
+        .replace(/\r\n/g, "\n")
+        .replace(/\t/g, " ")
+        .replace(/[ ]{2,}/g, " ")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
+    }
 
     if (normalized.length < 50) {
       return null;
