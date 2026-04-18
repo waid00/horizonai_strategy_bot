@@ -81,6 +81,7 @@ interface ChatRequestBody {
     model?: Record<string, unknown>;
     metadata?: Record<string, unknown>;
   };
+  dashboardImage?: string;        // base64 data URL of a dashboard screenshot for vision analysis
 }
 
 // ─── Schema Fetch ─────────────────────────────────────────────────────────────
@@ -114,6 +115,55 @@ async function fetchDataSchema(): Promise<SchemaTable[]> {
     return tables;
   } catch {
     return [];
+  }
+}
+
+/**
+ * Fetches rows from the data_records table and formats them as a readable
+ * text block so the LLM can cross-reference chart values against actual data.
+ */
+async function fetchDashboardData(): Promise<string> {
+  try {
+    const { data, error } = await getSupabase()
+      .from("data_records")
+      .select("table_name, row_data")
+      .limit(300);
+
+    if (error) {
+      console.warn("[DASHBOARD] Supabase fetch error:", error.message);
+      return "Could not fetch Supabase data.";
+    }
+    if (!data || data.length === 0) {
+      return "No data tables are currently synced to Supabase. Run the Databricks sync first.";
+    }
+
+    // Group rows by table_name
+    const tableMap = new Map<string, Record<string, unknown>[]>();
+    for (const row of data) {
+      const tbl = row.table_name as string;
+      if (!tableMap.has(tbl)) tableMap.set(tbl, []);
+      tableMap.get(tbl)!.push(row.row_data as Record<string, unknown>);
+    }
+
+    const parts: string[] = [];
+    for (const [tableName, rows] of tableMap.entries()) {
+      const columns = rows.length > 0 ? Object.keys(rows[0]) : [];
+      const preview = rows.slice(0, 50);
+      parts.push(
+        `Table "${tableName}" (${rows.length} rows, columns: ${columns.join(", ")}):\n` +
+          JSON.stringify(preview, null, 2)
+      );
+    }
+
+    const result = parts.join("\n\n---\n\n");
+    // Cap at ~150 KB to stay well within the LLM context window
+    const MAX_DATA_CHARS = 150_000;
+    return result.length > MAX_DATA_CHARS
+      ? result.slice(0, MAX_DATA_CHARS) + "\n\n[... data truncated ...]"
+      : result;
+  } catch (err) {
+    console.warn("[DASHBOARD] fetchDashboardData threw:", err);
+    return "Could not fetch Supabase data.";
   }
 }
 
@@ -293,22 +343,18 @@ Match your format to what the user asked. Use flowing prose for broad insight or
     modeInstructions = `
 DASHBOARD ANALYSIS MODE:
 
-The user has uploaded a Power BI report (.pbip or .pbix). The extracted report data is attached to the user's message as POWER BI REPORT DATA (JSON).
+You are analyzing a business dashboard for Horizon Bank. The user's message contains:
+• Their question.
+• SUPABASE TABLE DATA — the actual underlying database records that power this dashboard. Use these to find real values, counts, and patterns that explain what the charts show.
+• Optionally, a SCREENSHOT of the dashboard — if one is attached, use your vision capability to read chart titles, axis labels, data values, legends, trends, colours, and KPI numbers directly from the image.
+• Optionally, extracted Power BI report structure (visualization names, data model metadata).
 
-Your primary task is to answer the user's SPECIFIC QUESTION about this dashboard. Do NOT run a fixed analysis regardless of what was asked. The user may ask anything, for example:
-- "Why are the graphs the way they are?"
-- "Tell me the insights"
-- "Why is this dashboard relevant?"
-- "Give me a summary of what you see"
-- Any other question about the data, metrics, trends, or purpose
+Your 3-step analysis process:
+1. READ the visual: If a screenshot is attached, examine it carefully — identify the chart types displayed, read the axis labels and values, note trends, outliers, or patterns visible in the charts.
+2. UNDERSTAND the question: Determine exactly what the user wants to know. They may ask anything: "why do the graphs look this way?", "tell me the key insights", "why is this dashboard relevant?", "give me a summary", or any other question. Answer what was actually asked.
+3. CROSS-REFERENCE the data: Use the SUPABASE TABLE DATA to confirm, quantify, or explain what the charts show. Find the relevant rows and values that underlie the visual patterns and use them to give a data-grounded answer.
 
-How to use the POWER BI REPORT DATA:
-- Reference extracted visualization names, chart types, tables, measures, and columns by their actual names when they are present in the data.
-- If "extractedVisualizations" has a non-zero count, use those names directly.
-- If the extracted data is sparse (common with .pbix binary format), answer based on what IS available and, if helpful, mention that exporting as .pbip would unlock richer detail. Do not refuse to answer just because extraction is incomplete.
-
-STRATEGY CONTEXT:
-The CONTEXT DOCUMENTS section below contains Horizon Bank's strategy documents. Use them only if the user's question touches on strategic relevance, alignment, or business context. For purely data-focused questions (e.g. "explain these graphs"), you do not need to reference them.`;
+Do NOT run a fixed analysis script. Do NOT list all charts mechanically. Focus entirely on the user's specific question.`;
 
 
   } else if (mode === "gap-analysis") {
@@ -366,7 +412,7 @@ Answer the user's question directly and helpfully using the CONTEXT DOCUMENTS.
         ? `\nSUPPLEMENTARY STRATEGY CONTEXT (use only if the user's question concerns strategic relevance or alignment):\n${contextBlock}`
         : "";
 
-    return `You are a Power BI dashboard analyst at Horizon Bank. Your job is to answer questions about the Power BI report that the user has uploaded.
+    return `You are a business dashboard analyst at Horizon Bank. Your capabilities include visual analysis of dashboard screenshots (using vision) and cross-referencing of the underlying Supabase database records. Answer the user's questions about the dashboard they have shared.
 
 ${responseFormatInstructions}
 
@@ -402,7 +448,7 @@ export async function POST(req: NextRequest) {
     }
 
     const body: ChatRequestBody = await req.json();
-    const { messages, mode = "chat", externalText, reportData } = body;
+    const { messages, mode = "chat", externalText, reportData, dashboardImage } = body;
 
     // For dashboard mode, fetch the data schema to inject into the prompt
     const dataSchema: SchemaTable[] = mode === "dashboard" ? await fetchDataSchema() : [];
@@ -491,40 +537,65 @@ export async function POST(req: NextRequest) {
           content: `${lastUserMessage}\n\nEXTERNAL TEXT FOR GAP ANALYSIS:\n${externalText}`,
         },
       ];
-    } else if (mode === "dashboard-analysis" && reportData) {
-      // Dashboard analysis: augment last message with report JSON
-      const reportJson = JSON.stringify(reportData, null, 2);
-      const reportSize = reportJson.length;
+    } else if (mode === "dashboard-analysis") {
+      // ── Validate image if provided ──────────────────────────────────────
+      if (dashboardImage) {
+        if (!dashboardImage.startsWith("data:image/")) {
+          return new Response(
+            JSON.stringify({ error: "dashboardImage must be a base64 image data URL (data:image/...)" }),
+            { status: 400, headers: { "Content-Type": "application/json" } }
+          );
+        }
+        if (dashboardImage.length > 20 * 1024 * 1024) {
+          return new Response(
+            JSON.stringify({ error: "Dashboard image too large (max 20 MB base64). Compress before uploading." }),
+            { status: 400, headers: { "Content-Type": "application/json" } }
+          );
+        }
+      }
 
-      if (reportSize > 500 * 1024) {
-        return new Response(
-          JSON.stringify({ error: "Report data too large (max 500KB)" }),
-          { status: 400, headers: { "Content-Type": "application/json" } }
+      // ── Fetch actual Supabase table data for cross-referencing ──────────
+      const supabaseData = await fetchDashboardData();
+
+      // ── Build a compact PBI report summary (structural metadata only) ──
+      let reportSummary = "";
+      if (reportData?.report) {
+        const reportStr = JSON.stringify(reportData.report);
+        const trimmed =
+          reportStr.length > 10_000 ? reportStr.slice(0, 10_000) + "..." : reportStr;
+        reportSummary = `\n\nPOWER BI REPORT STRUCTURE (extracted metadata):\n\`\`\`json\n${trimmed}\n\`\`\``;
+      }
+
+      // ── Assemble text context: question + Supabase data + optional PBI ─
+      const textContent =
+        `${lastUserMessage}\n\nSUPABASE TABLE DATA (cross-reference against what the dashboard shows):\n${supabaseData}${reportSummary}`;
+
+      // ── Build multimodal content if a screenshot was provided ───────────
+      type TextPart = { type: "text"; text: string };
+      type ImagePart = { type: "image"; image: string };
+
+      if (dashboardImage) {
+        const contentParts: Array<TextPart | ImagePart> = [
+          { type: "image", image: dashboardImage },
+          { type: "text", text: textContent },
+        ];
+        augmentedMessages = [
+          ...modelMessages.slice(0, -1),
+          { role: "user" as const, content: contentParts },
+        ];
+        console.log(
+          `[DASHBOARD] Image attached (${(dashboardImage.length / 1024).toFixed(0)} KB base64)`
         );
+      } else {
+        augmentedMessages = [
+          ...modelMessages.slice(0, -1),
+          { role: "user" as const, content: textContent },
+        ];
       }
-
-      // Check if this is a .pbix file (has limitation note)
-      const isPbixFile = reportData.report && 
-        typeof reportData.report === 'object' && 
-        'fileFormat' in reportData.report &&
-        (reportData.report as Record<string, unknown>).fileFormat === '.pbix (Power BI Desktop)';
-
-      let pbixNote = "";
-      if (isPbixFile) {
-        pbixNote = `\n\n⚠️ NOTE: This is a Power BI Desktop (.pbix) file. The binary format limits extractable data.
-For better analysis, please export the report as .pbip (Power BI Project) format, which uses JSON and contains full report definitions with measure names, page layouts, and visualization details.\n`;
-      }
-
-      const lastIndex = augmentedMessages.length - 1;
-      const lastMessage = augmentedMessages[lastIndex];
-
-      augmentedMessages[lastIndex] = {
-        role: "user" as const,
-        content: `${lastMessage.content as string}${pbixNote}\n\nPOWER BI REPORT DATA:\n\`\`\`json\n${reportJson}\n\`\`\``,
-      };
 
       console.log(
-        `[DASHBOARD] Report JSON attached (${(reportSize / 1024).toFixed(1)} KB) for analysis${isPbixFile ? " [PBIX format]" : ""}`
+        `[DASHBOARD] Supabase data: ${(supabaseData.length / 1024).toFixed(1)} KB, ` +
+          `image: ${dashboardImage ? "yes" : "no"}, PBI: ${reportData ? "yes" : "no"}`
       );
     }
 

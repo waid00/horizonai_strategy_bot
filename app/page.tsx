@@ -337,7 +337,10 @@ export default function HorizonBotPage() {
   const [dashboardMessages, setDashboardMessages] = useState<{ role: "user" | "assistant"; content: string }[]>([]);
   const [dashboardChatInput, setDashboardChatInput] = useState("");
   const [dashboardChatLoading, setDashboardChatLoading] = useState(false);
+  const [dashboardImage, setDashboardImage] = useState<string | null>(null);
+  const [dashboardImageName, setDashboardImageName] = useState<string | null>(null);
   const dashboardFileInputRef = useRef<HTMLInputElement>(null);
+  const dashboardImageInputRef = useRef<HTMLInputElement>(null);
   const dashboardChatEndRef = useRef<HTMLDivElement>(null);
   const [alignmentQueryA, setAlignmentQueryA] = useState("");
   const [alignmentQueryB, setAlignmentQueryB] = useState("");
@@ -523,6 +526,63 @@ export default function HorizonBotPage() {
     setAlignmentOpen(true);
   }
 
+  /** Resize and JPEG-compress an image to keep it within a sensible size for the API. */
+  function compressDashboardImage(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      const objectUrl = URL.createObjectURL(file);
+      img.onload = () => {
+        const MAX_SIDE = 1920;
+        let { width, height } = img;
+        if (width > MAX_SIDE || height > MAX_SIDE) {
+          const ratio = Math.min(MAX_SIDE / width, MAX_SIDE / height);
+          width = Math.round(width * ratio);
+          height = Math.round(height * ratio);
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          URL.revokeObjectURL(objectUrl);
+          reject(new Error("Canvas not supported"));
+          return;
+        }
+        ctx.drawImage(img, 0, 0, width, height);
+        URL.revokeObjectURL(objectUrl);
+        resolve(canvas.toDataURL("image/jpeg", 0.85));
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(objectUrl);
+        reject(new Error("Failed to load image"));
+      };
+      img.src = objectUrl;
+    });
+  }
+
+  async function handleDashboardImageSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      setDashboardSubmitError("Please select a valid image file (PNG, JPG, WEBP, etc.).");
+      return;
+    }
+    if (file.size > 30 * 1024 * 1024) {
+      // 30 MB raw → after 85% JPEG compression the base64 will be well under the
+      // 20 MB base64 limit enforced by the backend.
+      setDashboardSubmitError("Image file too large (max 30 MB).");
+      return;
+    }
+    setDashboardSubmitError(null);
+    setDashboardImageName(file.name);
+    try {
+      const dataUrl = await compressDashboardImage(file);
+      setDashboardImage(dataUrl);
+    } catch {
+      setDashboardSubmitError("Could not process image. Please try a different file.");
+    }
+  }
+
   async function handleDashboardFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -533,20 +593,28 @@ export default function HorizonBotPage() {
   }
 
   async function handleDashboardSubmit() {
-    if (!dashboardFile || dashboardSubmitting) return;
+    if ((!dashboardFile && !dashboardImage) || dashboardSubmitting) return;
     setDashboardSubmitting(true);
     setDashboardSubmitError(null);
     try {
-      const formData = new FormData();
-      formData.append("file", dashboardFile);
-      const res = await fetch("/api/extract-pbip", { method: "POST", body: formData });
-      const payload = await parseApiResponse(res);
-      if (!res.ok) throw new Error(String(payload?.error ?? "Extraction failed."));
-      const reportData = (payload as { reportData?: { report?: unknown; model?: unknown; metadata?: unknown } })?.reportData;
-      if (!reportData) throw new Error("No report data could be extracted from this file.");
-      setDashboardReportData(reportData);
+      if (dashboardFile) {
+        const formData = new FormData();
+        formData.append("file", dashboardFile);
+        const res = await fetch("/api/extract-pbip", { method: "POST", body: formData });
+        const payload = await parseApiResponse(res);
+        if (!res.ok) throw new Error(String(payload?.error ?? "Extraction failed."));
+        const reportData = (payload as { reportData?: { report?: unknown; model?: unknown; metadata?: unknown } })?.reportData;
+        if (!reportData) throw new Error("No report data could be extracted from this file.");
+        setDashboardReportData(reportData);
+      } else {
+        // Image-only mode: skip extraction and go straight to the chat phase.
+        // Setting a non-null empty object signals "ready" to the UI conditional
+        // (`dashboardReportData ? <chat> : <upload>`), distinguishing it from
+        // `null` which means "not yet submitted".
+        setDashboardReportData({});
+      }
     } catch (err) {
-      setDashboardSubmitError(err instanceof Error ? err.message : "Extraction failed.");
+      setDashboardSubmitError(err instanceof Error ? err.message : "Processing failed.");
     } finally {
       setDashboardSubmitting(false);
     }
@@ -586,6 +654,7 @@ export default function HorizonBotPage() {
           messages: historyToSend,
           mode: "dashboard-analysis",
           reportData: dashboardReportData,
+          ...(dashboardImage ? { dashboardImage } : {}),
         }),
       });
       if (!res.ok) {
@@ -640,7 +709,10 @@ export default function HorizonBotPage() {
     setDashboardSubmitError(null);
     setDashboardMessages([]);
     setDashboardChatInput("");
+    setDashboardImage(null);
+    setDashboardImageName(null);
     if (dashboardFileInputRef.current) dashboardFileInputRef.current.value = "";
+    if (dashboardImageInputRef.current) dashboardImageInputRef.current.value = "";
   }
 
   useEffect(() => {
@@ -816,7 +888,7 @@ export default function HorizonBotPage() {
                     <rect x="3" y="3" width="18" height="18" rx="2"/>
                     <path d="M3 9h18M9 21V9"/>
                   </svg>
-                  <span>{dashboardFile?.name ?? "Dashboard"}</span>
+                  <span>{dashboardImageName ?? dashboardFile?.name ?? "Dashboard"}</span>
                 </div>
                 <button type="button" className="btn-secondary dashboard-change-btn" onClick={resetDashboardSession}>
                   Change File
@@ -835,7 +907,7 @@ export default function HorizonBotPage() {
                       </div>
                       <h1 className="empty-title">Dashboard Loaded</h1>
                       <p className="empty-body">
-                        Ask me anything about this dashboard — insights, trends, why graphs look the way they do, or a full summary of what you see.
+                        Ask me anything about this dashboard — why the graphs look the way they do, key insights, trends, a full summary, or any other question. I can read the screenshot visually and cross-reference your database records.
                       </p>
                     </div>
                   )}
@@ -906,9 +978,50 @@ export default function HorizonBotPage() {
                 </div>
                 <h1 className="dashboard-upload-title">Dashboard Analyzer</h1>
                 <p className="dashboard-upload-subtitle">
-                  Upload a Power BI file (.pbip or .pbix) and ask any questions about the dashboard — insights, trends, summaries, and more.
+                  Upload a screenshot of your dashboard. The AI will read the charts visually and cross-reference your Supabase data to answer any question.
                 </p>
 
+                {/* ── Screenshot upload (primary) ─────────────────────── */}
+                <p style={{ alignSelf: "flex-start", fontSize: "0.8rem", color: "var(--text-secondary)", marginBottom: "0.35rem" }}>
+                  Dashboard screenshot <span style={{ color: "var(--accent)" }}>*</span>
+                </p>
+                <div
+                  className="dashboard-dropzone"
+                  onClick={() => dashboardImageInputRef.current?.click()}
+                >
+                  <input
+                    ref={dashboardImageInputRef}
+                    type="file"
+                    accept="image/png,image/jpeg,image/jpg,image/webp,image/gif"
+                    style={{ display: "none" }}
+                    onChange={handleDashboardImageSelect}
+                  />
+                  {dashboardImage ? (
+                    <div className="dashboard-dropzone-selected">
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <rect x="3" y="3" width="18" height="18" rx="2"/>
+                        <circle cx="8.5" cy="8.5" r="1.5"/>
+                        <polyline points="21 15 16 10 5 21"/>
+                      </svg>
+                      <span>{dashboardImageName}</span>
+                      <span className="dashboard-dropzone-size">ready</span>
+                    </div>
+                  ) : (
+                    <div className="dashboard-dropzone-empty">
+                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                        <polyline points="17 8 12 3 7 8"/>
+                        <line x1="12" y1="3" x2="12" y2="15"/>
+                      </svg>
+                      <span>Click to upload a screenshot (PNG, JPG, WEBP)</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* ── PBI file upload (optional) ──────────────────────── */}
+                <p style={{ alignSelf: "flex-start", fontSize: "0.8rem", color: "var(--text-secondary)", marginBottom: "0.35rem", marginTop: "0.75rem" }}>
+                  Power BI file <span style={{ color: "var(--text-secondary)" }}>(optional — adds structural metadata)</span>
+                </p>
                 <div
                   className="dashboard-dropzone"
                   onClick={() => dashboardFileInputRef.current?.click()}
@@ -951,7 +1064,7 @@ export default function HorizonBotPage() {
                   type="button"
                   className="btn-primary dashboard-submit-btn"
                   onClick={handleDashboardSubmit}
-                  disabled={!dashboardFile || dashboardSubmitting}
+                  disabled={(!dashboardFile && !dashboardImage) || dashboardSubmitting}
                 >
                   {dashboardSubmitting ? (
                     <>
@@ -960,7 +1073,7 @@ export default function HorizonBotPage() {
                       </span>
                       <span>Processing…</span>
                     </>
-                  ) : "Analyze Dashboard"}
+                  ) : "Start Analysis"}
                 </button>
               </div>
             </section>
