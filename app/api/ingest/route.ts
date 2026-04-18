@@ -95,6 +95,86 @@ async function getMammothExtractRawText() {
   return _extractRawText;
 }
 
+/**
+ * Parses a single CSV row, handling double-quoted fields that may contain commas.
+ */
+function parseCsvRow(row: string): string[] {
+  const result: string[] = [];
+  let current = "";
+  let inQuotes = false;
+
+  for (let i = 0; i < row.length; i++) {
+    const char = row[i];
+    if (char === '"') {
+      // Handle escaped double-quotes ("") inside a quoted field
+      if (inQuotes && row[i + 1] === '"') {
+        current += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (char === "," && !inQuotes) {
+      result.push(current.trim());
+      current = "";
+    } else {
+      current += char;
+    }
+  }
+  result.push(current.trim());
+  return result;
+}
+
+/**
+ * Converts CSV text into a human-readable, semantically rich format so that
+ * embeddings capture the relationship between column names and their values.
+ *
+ * Example input:
+ *   Metric,Current,Target
+ *   Active Digital Clients,55%,80%
+ *   Cost-to-Income,60%,40%
+ *
+ * Example output:
+ *   Active Digital Clients | Current: 55% | Target: 80%
+ *   Cost-to-Income | Current: 60% | Target: 40%
+ */
+function csvToDescriptiveText(csvContent: string): string {
+  const lines = csvContent
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+
+  if (lines.length < 2) {
+    // Single-line CSV or empty – return as-is
+    return csvContent;
+  }
+
+  const headers = parseCsvRow(lines[0]);
+  if (headers.length === 0) return csvContent;
+
+  const rows: string[] = [];
+
+  for (let i = 1; i < lines.length; i++) {
+    const values = parseCsvRow(lines[i]);
+    if (values.length === 0) continue;
+
+    // Build "Header: Value" pairs; skip pairs where the value is empty
+    const pairs: string[] = [];
+    for (let col = 0; col < headers.length; col++) {
+      const header = headers[col];
+      const value = values[col] ?? "";
+      if (header && value) {
+        pairs.push(`${header}: ${value}`);
+      }
+    }
+
+    if (pairs.length > 0) {
+      rows.push(pairs.join(" | "));
+    }
+  }
+
+  return rows.length > 0 ? rows.join("\n") : csvContent;
+}
+
 function chunkDocument(doc: LoadedDocument, maxChunkChars = 900): Chunk[] {
   const paragraphs = doc.content
     .split("\n")
@@ -164,12 +244,21 @@ async function loadDocument(fullPath: string, sourceLabel: string): Promise<Load
       content = await fs.readFile(fullPath, "utf-8");
     }
 
-    const normalized = content
+    const rawNormalized = content
       .replace(/\r\n/g, "\n")
       .replace(/\t/g, " ")
       .replace(/[ ]{2,}/g, " ")
       .replace(/\n{3,}/g, "\n\n")
       .trim();
+
+    // CSV files are converted to human-readable key-value prose so that
+    // embeddings capture the relationship between column headers and values
+    // (e.g. "Active Digital Clients | Current: 55% | Target: 80%").
+    // Plain comma-separated rows produce poor embeddings because the values
+    // are semantically disconnected from their column names.
+    const normalized =
+      extension === ".csv" ? csvToDescriptiveText(rawNormalized) : rawNormalized;
+
     if (normalized.length < 50) {
       return null;
     }

@@ -172,7 +172,7 @@ async function retrieveContextWithFallback(query: string): Promise<MatchedDocume
   for (const threshold of thresholdPlan) {
     try {
       console.log(`[RAG] retrieval attempt threshold=${threshold.toFixed(2)}`);
-      const chunks = await retrieveContext(query, threshold, 8);
+      const chunks = await retrieveContext(query, threshold, 10);
       console.log(`[RAG] retrieval result threshold=${threshold.toFixed(2)} chunks=${chunks.length}`);
       if (chunks.length > 0) {
         return chunks;
@@ -194,7 +194,7 @@ async function retrieveContextWithFallback(query: string): Promise<MatchedDocume
     const { data, error } = await getSupabase()
       .from("documents")
       .select("id, content, metadata")
-      .limit(8);
+      .limit(10);
 
     if (error) {
       console.error("[RAG] Direct table scan error:", error.message);
