@@ -84,87 +84,89 @@ interface ChatRequestBody {
   dashboardImage?: string;        // base64 data URL of a dashboard screenshot for vision analysis
 }
 
+// ─── Gold Table Definitions ───────────────────────────────────────────────────
+
+/**
+ * The four Supabase gold tables populated by the Databricks sync.
+ * These names match DATABRICKS_TABLES entries like
+ * vse_banka.strategie.gold_dim_kpi → stored in table `gold_dim_kpi`.
+ */
+const GOLD_TABLES: Array<{ name: string; columns: string[] }> = [
+  { name: "gold_dim_kpi",    columns: ["kpi_id", "kpi_name", "kpi_type", "target_value", "initial_value", "unit"] },
+  { name: "gold_dim_period", columns: ["period_id", "period", "quarter", "year"] },
+  { name: "gold_dim_team",   columns: ["team_id", "team_name", "domain"] },
+  { name: "gold_fact_kpi",   columns: ["period_id", "kpi_id", "team_id", "value", "dq_flag"] },
+];
+
 // ─── Schema Fetch ─────────────────────────────────────────────────────────────
 
 async function fetchDataSchema(): Promise<SchemaTable[]> {
-  const supabaseUrl = process.env.SUPABASE_URL;
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!supabaseUrl || !serviceRoleKey) return [];
+  if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) return [];
 
-  try {
-    const { data: samples } = await getSupabase()
-      .from("data_records")
-      .select("table_name, row_data")
-      .limit(1000);
+  const tables: SchemaTable[] = [];
 
-    if (!samples || samples.length === 0) return [];
+  for (const gt of GOLD_TABLES) {
+    try {
+      const { count } = await getSupabase()
+        .from(gt.name)
+        .select("*", { count: "exact", head: true });
 
-    // Group by table_name
-    const tableMap = new Map<string, Record<string, unknown>[]>();
-    for (const row of samples) {
-      const tbl = row.table_name as string;
-      if (!tableMap.has(tbl)) tableMap.set(tbl, []);
-      tableMap.get(tbl)!.push(row.row_data as Record<string, unknown>);
+      tables.push({ table_name: gt.name, row_count: count ?? 0, columns: gt.columns });
+    } catch {
+      // Include the table definition even if the count fails
+      tables.push({ table_name: gt.name, row_count: 0, columns: gt.columns });
     }
-
-    const tables: SchemaTable[] = [];
-    for (const [tableName, rows] of tableMap.entries()) {
-      const columns = rows.length > 0 ? Object.keys(rows[0]) : [];
-      tables.push({ table_name: tableName, row_count: rows.length, columns });
-    }
-    return tables;
-  } catch {
-    return [];
   }
+
+  return tables;
 }
 
 /**
- * Fetches rows from the data_records table and formats them as a readable
+ * Fetches rows from the four gold tables and formats them as a readable
  * text block so the LLM can cross-reference chart values against actual data.
  */
 async function fetchDashboardData(): Promise<string> {
-  try {
-    const { data, error } = await getSupabase()
-      .from("data_records")
-      .select("table_name, row_data")
-      .limit(300);
+  const parts: string[] = [];
 
-    if (error) {
-      console.warn("[DASHBOARD] Supabase fetch error:", error.message);
-      return "Could not fetch Supabase data.";
-    }
-    if (!data || data.length === 0) {
-      return "No data tables are currently synced to Supabase. Run the Databricks sync first.";
-    }
+  for (const gt of GOLD_TABLES) {
+    try {
+      const { data, error } = await getSupabase()
+        .from(gt.name)
+        .select("*")
+        .limit(200);
 
-    // Group rows by table_name
-    const tableMap = new Map<string, Record<string, unknown>[]>();
-    for (const row of data) {
-      const tbl = row.table_name as string;
-      if (!tableMap.has(tbl)) tableMap.set(tbl, []);
-      tableMap.get(tbl)!.push(row.row_data as Record<string, unknown>);
-    }
+      if (error) {
+        parts.push(`Table "${gt.name}": error – ${error.message}`);
+        continue;
+      }
 
-    const parts: string[] = [];
-    for (const [tableName, rows] of tableMap.entries()) {
-      const columns = rows.length > 0 ? Object.keys(rows[0]) : [];
+      const rows = (data ?? []) as Record<string, unknown>[];
+      if (rows.length === 0) {
+        parts.push(`Table "${gt.name}": no rows (sync may not have run yet).`);
+        continue;
+      }
+
+      const columns = Object.keys(rows[0]);
       const preview = rows.slice(0, 50);
       parts.push(
-        `Table "${tableName}" (${rows.length} rows, columns: ${columns.join(", ")}):\n` +
+        `Table "${gt.name}" (${rows.length} rows, columns: ${columns.join(", ")}):\n` +
           JSON.stringify(preview, null, 2)
       );
+    } catch (err) {
+      parts.push(`Table "${gt.name}": fetch failed – ${String(err)}`);
     }
-
-    const result = parts.join("\n\n---\n\n");
-    // Cap at ~150 KB to stay well within the LLM context window
-    const MAX_DATA_CHARS = 150_000;
-    return result.length > MAX_DATA_CHARS
-      ? result.slice(0, MAX_DATA_CHARS) + "\n\n[... data truncated ...]"
-      : result;
-  } catch (err) {
-    console.warn("[DASHBOARD] fetchDashboardData threw:", err);
-    return "Could not fetch Supabase data.";
   }
+
+  if (parts.length === 0) {
+    return "No gold tables found. Run the Databricks sync first.";
+  }
+
+  const result = parts.join("\n\n---\n\n");
+  // Cap at ~150 KB to stay well within the LLM context window
+  const MAX_DATA_CHARS = 150_000;
+  return result.length > MAX_DATA_CHARS
+    ? result.slice(0, MAX_DATA_CHARS) + "\n\n[... data truncated ...]"
+    : result;
 }
 
 function extractMessageText(message: ChatRequestBody["messages"][number]): string {
@@ -299,7 +301,7 @@ Your task:
   a. Understand what the user wants to visualise.
   b. Use the AVAILABLE DATA SCHEMA below to write SQL queries.
   c. Output a brief explanation (2–3 sentences) and then the <dashboard> block.
-  d. Each chart SQL must be a valid SELECT against data_records (see RESPONSE FORMAT).
+  d. Each chart SQL must be a valid SELECT against one of the gold tables (see RESPONSE FORMAT).
 
 AVAILABLE DATA SCHEMA:
 ${schemaBlock}`;
@@ -379,8 +381,13 @@ The dashboard block MUST use this exact format (no extra whitespace inside the t
 <dashboard>[{"title":"Chart Title","type":"bar","sql":"SELECT ..."},{"title":"Chart 2","type":"line","sql":"SELECT ..."}]</dashboard>
 Rules for the SQL inside the block:
 - Each SQL must be a single SELECT statement.
-- Queries MUST reference the data_records table.
-- Use the pattern: SELECT row_data->>'column_name' AS column_name, ... FROM data_records WHERE table_name = '<table>' LIMIT 50
+- Queries MUST use one of the gold tables: gold_dim_kpi, gold_dim_period, gold_dim_team, gold_fact_kpi.
+- Simple examples:
+    SELECT kpi_name, target_value FROM gold_dim_kpi LIMIT 50
+    SELECT period, year FROM gold_dim_period LIMIT 50
+    SELECT team_name, domain FROM gold_dim_team LIMIT 50
+- For fact data with dimension labels, use JOINs:
+    SELECT k.kpi_name, p.period, f.value FROM gold_fact_kpi f JOIN gold_dim_kpi k ON f.kpi_id = k.kpi_id JOIN gold_dim_period p ON f.period_id = p.period_id LIMIT 50
 - Supported chart types: bar, line, pie, table
 - Maximum 6 charts per dashboard.
 - Do NOT include semicolons.`;
