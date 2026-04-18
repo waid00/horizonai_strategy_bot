@@ -59,14 +59,28 @@ interface SchemaTable {
   columns: string[];
 }
 
+type ContentBlock = {
+  type: "text" | "image_url";
+  text?: string;
+  image_url?: {
+    url: string;
+    detail?: "low" | "high";
+  };
+};
+
 interface ChatRequestBody {
   messages: Array<{
     role: "user" | "assistant" | "system";
-    content?: string;
+    content?: string | ContentBlock[];
     parts?: Array<{ type: string; text?: string }>;
   }>;
-  mode?: "chat" | "gap-analysis" | "dashboard"; // default: chat
-  externalText?: string;          // only used in gap-analysis mode
+  mode?: "chat" | "gap-analysis" | "dashboard" | "dashboard-analysis";
+  externalText?: string;
+  reportData?: {                  // Power BI report JSON (from /api/extract-pbip)
+    report?: Record<string, unknown>;
+    model?: Record<string, unknown>;
+    metadata?: Record<string, unknown>;
+  };
 }
 
 // ─── Schema Fetch ─────────────────────────────────────────────────────────────
@@ -243,7 +257,7 @@ ${schemaBlock}`;
 
 function buildSystemPrompt(
   retrievedChunks: MatchedDocument[],
-  mode: "chat" | "gap-analysis" | "dashboard",
+  mode: "chat" | "gap-analysis" | "dashboard" | "dashboard-analysis",
   schema?: SchemaTable[]
 ): string {
   const contextBlock =
@@ -271,7 +285,36 @@ RESPONSE GUIDELINES:
   let responseFormatInstructions: string;
   let modeInstructions: string;
 
-  if (mode === "gap-analysis") {
+  if (mode === "dashboard-analysis") {
+    responseFormatInstructions = `
+RESPONSE FORMAT (Dashboard Analysis mode):
+Write your analysis as natural flowing paragraphs and prose. Do not use hardcoded section headers or bullet points. 
+Simply discuss the report's visualizations, metrics, and strategic alignment in conversational paragraphs that flow naturally from one thought to the next.`;
+
+    modeInstructions = `
+DASHBOARD ANALYSIS MODE:
+
+CRITICAL: Check if reportData.report contains "extractedVisualizations":
+- If YES (extractedVisualizations with a non-zero 'count'): Use the ACTUAL extracted visualization names. Do NOT infer - read them directly.
+- If NO or count is 0 (empty list): The file is in binary format with no extractable visualizations. Tell user to export as .pbip format for detailed analysis.
+
+EXTRACTION MODE (when extractedVisualizations with actual data is found):
+  a. LIST VISUALIZATIONS: Start by naming the specific visualizations found. Example: "This dashboard contains the following visualizations: Revenue Trend (line chart), Regional Sales Breakdown (bar chart), Profit Margin KPI (metric), Customer Churn Rate (gauge), Market Share Distribution (pie chart), Top Products (table)..."
+  b. IDENTIFY METRICS: State the key metrics being tracked based on the visualization names and extracted measures.
+  c. DESCRIBE PURPOSE: Explain what this dashboard is designed to monitor and track based on these specific visualizations.
+  d. CROSS-REFERENCE STRATEGY: Link each significant metric/visualization to Horizon Bank's strategic priorities from CONTEXT DOCUMENTS.
+  e. PROVIDE INSIGHTS: In natural prose, explain what performance and trends this dashboard reveals.
+
+EMPTY/FALLBACK MODE (when extractedVisualizations is empty or count is 0):
+  a. ACKNOWLEDGE FORMAT LIMITATION: Explain that the .pbix file's binary format prevents extraction of specific visualization details.
+  b. SUGGEST EXPORT: Tell user to export the report as .pbip (Power BI Project format) which is JSON-based and fully extractable.
+  c. PROVIDE STRATEGIC CONTEXT: Reference Horizon Bank's key KPIs and what strategic areas they typically measure (revenue, efficiency, customer satisfaction, compliance).
+  d. Offer to analyze if they provide the .pbip format.
+
+FORMAT: Natural flowing paragraphs without section headers, numbered lists, or artificial structure.`;
+
+
+  } else if (mode === "gap-analysis") {
     responseFormatInstructions = `
 RESPONSE FORMAT (Gap Analysis mode):
 Always respond with a structured markdown table with exactly these columns: Domain | Current State | Target State | Gap | Recommendation
@@ -345,7 +388,7 @@ export async function POST(req: NextRequest) {
     }
 
     const body: ChatRequestBody = await req.json();
-    const { messages, mode = "chat", externalText } = body;
+    const { messages, mode = "chat", externalText, reportData } = body;
 
     // For dashboard mode, fetch the data schema to inject into the prompt
     const dataSchema: SchemaTable[] = mode === "dashboard" ? await fetchDataSchema() : [];
@@ -416,17 +459,54 @@ export async function POST(req: NextRequest) {
     // ── Step 2: Build system prompt with injected context ─────────────────
     const systemPrompt = buildSystemPrompt(retrievedChunks, mode, dataSchema);
 
-    // Augment the last user message with external text for gap-analysis
-    const augmentedMessages =
-      mode === "gap-analysis" && externalText
-        ? [
-            ...modelMessages.slice(0, -1),
-            {
-              role: "user" as const,
-              content: `${lastUserMessage}\n\nEXTERNAL TEXT FOR GAP ANALYSIS:\n${externalText}`,
-            },
-          ]
-        : modelMessages;
+    // ── Step 2b: Handle message augmentation for special modes ──────────────
+    let augmentedMessages: any[] = modelMessages;
+
+    if (mode === "gap-analysis" && externalText) {
+      // Gap analysis: append external text
+      augmentedMessages = [
+        ...modelMessages.slice(0, -1),
+        {
+          role: "user" as const,
+          content: `${lastUserMessage}\n\nEXTERNAL TEXT FOR GAP ANALYSIS:\n${externalText}`,
+        },
+      ];
+    } else if (mode === "dashboard-analysis" && reportData) {
+      // Dashboard analysis: augment last message with report JSON
+      const reportJson = JSON.stringify(reportData, null, 2);
+      const reportSize = reportJson.length;
+
+      if (reportSize > 500 * 1024) {
+        return new Response(
+          JSON.stringify({ error: "Report data too large (max 500KB)" }),
+          { status: 400, headers: { "Content-Type": "application/json" } }
+        );
+      }
+
+      // Check if this is a .pbix file (has limitation note)
+      const isPbixFile = reportData.report && 
+        typeof reportData.report === 'object' && 
+        'fileFormat' in reportData.report &&
+        (reportData.report as Record<string, unknown>).fileFormat === '.pbix (Power BI Desktop)';
+
+      let pbixNote = "";
+      if (isPbixFile) {
+        pbixNote = `\n\n⚠️ NOTE: This is a Power BI Desktop (.pbix) file. The binary format limits extractable data.
+For better analysis, please export the report as .pbip (Power BI Project) format, which uses JSON and contains full report definitions with measure names, page layouts, and visualization details.\n`;
+      }
+
+      const lastIndex = augmentedMessages.length - 1;
+      const lastMessage = augmentedMessages[lastIndex];
+
+      augmentedMessages[lastIndex] = {
+        role: "user" as const,
+        content: `${lastMessage.content as string}${pbixNote}\n\nPOWER BI REPORT DATA:\n\`\`\`json\n${reportJson}\n\`\`\``,
+      };
+
+      console.log(
+        `[DASHBOARD] Report JSON attached (${(reportSize / 1024).toFixed(1)} KB) for analysis${isPbixFile ? " [PBIX format]" : ""}`
+      );
+    }
 
     // ── Step 3: Stream from OpenAI gpt-4o via Vercel AI SDK ───────────────
     const result = streamText({

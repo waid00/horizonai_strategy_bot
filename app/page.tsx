@@ -15,7 +15,7 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from "recharts";
 
-type Mode = "chat" | "documents";
+type Mode = "chat" | "documents" | "dashboard-test";
 
 type ManagedDocument = {
   id: string;
@@ -330,6 +330,14 @@ export default function HorizonBotPage() {
   const [docsNotice, setDocsNotice] = useState<string | null>(null);
   const [ingestLogs, setIngestLogs] = useState<string[]>([]);
   const [alignmentOpen, setAlignmentOpen] = useState(false);
+  const [dashboardFile, setDashboardFile] = useState<File | null>(null);
+  const [dashboardExtracting, setDashboardExtracting] = useState(false);
+  const [dashboardExtracted, setDashboardExtracted] = useState<{ report?: unknown; model?: unknown; metadata?: unknown } | null>(null);
+  const [dashboardExtractionError, setDashboardExtractionError] = useState<string | null>(null);
+  const [dashboardQuestion, setDashboardQuestion] = useState("");
+  const [dashboardAnalyzing, setDashboardAnalyzing] = useState(false);
+  const [dashboardAnalysisResult, setDashboardAnalysisResult] = useState<string | null>(null);
+  const dashboardFileInputRef = useRef<HTMLInputElement>(null);
   const [alignmentQueryA, setAlignmentQueryA] = useState("");
   const [alignmentQueryB, setAlignmentQueryB] = useState("");
   const [alignmentDocAId, setAlignmentDocAId] = useState("");
@@ -514,6 +522,125 @@ export default function HorizonBotPage() {
     setAlignmentOpen(true);
   }
 
+  async function handleDashboardFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setDashboardFile(file);
+    setDashboardExtracted(null);
+    setDashboardExtractionError(null);
+    setDashboardAnalysisResult(null);
+  }
+
+  async function handleDashboardExtract() {
+    if (!dashboardFile || dashboardExtracting) return;
+    setDashboardExtracting(true);
+    setDashboardExtractionError(null);
+    setDashboardExtracted(null);
+    try {
+      const formData = new FormData();
+      formData.append("file", dashboardFile);
+      console.log(`[DASHBOARD] Extracting ${dashboardFile.name}...`);
+      const res = await fetch("/api/extract-pbip", { method: "POST", body: formData });
+      console.log(`[DASHBOARD] Response status: ${res.status}`);
+      const payload = await parseApiResponse(res);
+      if (!res.ok) throw new Error(String(payload?.error ?? "Extraction failed."));
+      console.log(`[DASHBOARD] Extraction successful:`, payload);
+      const reportData = (payload as { reportData?: { report?: unknown; model?: unknown; metadata?: unknown } })?.reportData;
+      if (reportData) {
+        setDashboardExtracted(reportData);
+      } else {
+        throw new Error("No reportData in response");
+      }
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : "Extraction failed.";
+      console.error(`[DASHBOARD] Extraction error:`, errorMsg);
+      setDashboardExtractionError(errorMsg);
+    } finally {
+      setDashboardExtracting(false);
+    }
+  }
+
+  async function handleDashboardAnalyze() {
+    if (!dashboardExtracted || !dashboardQuestion.trim() || dashboardAnalyzing) return;
+    setDashboardAnalyzing(true);
+    setDashboardAnalysisResult(null);
+    try {
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: [{ role: "user", content: dashboardQuestion }],
+          mode: "dashboard-analysis",
+          reportData: dashboardExtracted,
+        }),
+      });
+      
+      if (!res.ok) {
+        const errorText = await res.text();
+        throw new Error(`Analysis failed (${res.status}): ${errorText}`);
+      }
+
+      // The /api/chat endpoint returns a Vercel AI SDK stream via toUIMessageStreamResponse()
+      // This is a server-sent events stream with specific formatting
+      const reader = res.body?.getReader();
+      if (!reader) throw new Error("No response body");
+
+      const decoder = new TextDecoder();
+      let result = "";
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          
+          const chunk = decoder.decode(value, { stream: true });
+          const lines = chunk.split("\n");
+          
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+            
+            // Parse server-sent events format
+            if (trimmed.startsWith("data:")) {
+              try {
+                const json = JSON.parse(trimmed.slice(5).trim());
+                
+                // Handle different event types from Vercel AI SDK
+                if (json.type === "text" && json.text) {
+                  result += json.text;
+                } else if (json.type === "text-delta" && json.delta) {
+                  result += json.delta;
+                } else if (json.type === "message-delta" && json.delta?.content) {
+                  result += json.delta.content;
+                } else if (json.text) {
+                  // Fallback: if there's a text field at root level
+                  result += json.text;
+                }
+              } catch (e) {
+                // Not JSON, continue
+              }
+            }
+          }
+        }
+      } finally {
+        reader.cancel();
+      }
+
+      if (!result.trim()) {
+        console.warn(`[DASHBOARD] Stream ended with no text extracted`);
+        setDashboardAnalysisResult("No response from analysis (empty stream)");
+      } else {
+        setDashboardAnalysisResult(result);
+      }
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : "Analysis failed.";
+      console.error(`[DASHBOARD] Analysis error:`, errorMsg);
+      setDashboardAnalysisResult(`Error: ${errorMsg}`);
+    } finally {
+      setDashboardAnalyzing(false);
+    }
+  }
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
@@ -557,6 +684,12 @@ export default function HorizonBotPage() {
               onClick={() => setMode("documents")}
             >
               Documents
+            </button>
+            <button
+              className={`mode-btn ${mode === "dashboard-test" ? "active" : ""}`}
+              onClick={() => setMode("dashboard-test")}
+            >
+              Dashboard Test
             </button>
           </nav>
         </div>
@@ -663,6 +796,93 @@ export default function HorizonBotPage() {
                 <div className="docs-logs">
                   <h3>Ingest Log</h3>
                   <pre>{ingestLogs.join("\n")}</pre>
+                </div>
+              )}
+            </div>
+          </section>
+        ) : mode === "dashboard-test" ? (
+          <section className="dashboard-test-section">
+            <div className="dashboard-test-container">
+              <div className="dashboard-test-header">
+                <div>
+                  <h1 className="dashboard-test-title">Power BI Dashboard Test</h1>
+                  <p className="dashboard-test-subtitle">
+                    Upload a .pbip file and test dashboard analysis
+                  </p>
+                </div>
+              </div>
+
+              <div className="dashboard-test-upload">
+                <input
+                  ref={dashboardFileInputRef}
+                  type="file"
+                  accept=".pbip,.pbix"
+                  className="file-input"
+                  onChange={handleDashboardFileSelect}
+                />
+                <div className="dashboard-test-actions">
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    onClick={() => dashboardFileInputRef.current?.click()}
+                  >
+                    {dashboardFile ? `Change File (${dashboardFile.name})` : "Select .pbip or .pbix File"}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    onClick={handleDashboardExtract}
+                    disabled={!dashboardFile || dashboardExtracting}
+                  >
+                    {dashboardExtracting ? "Extracting..." : "Extract"}
+                  </button>
+                </div>
+              </div>
+
+              {dashboardExtractionError && (
+                <div className="error-banner" style={{ marginTop: "1rem" }}>
+                  ⚠ {dashboardExtractionError}
+                </div>
+              )}
+
+              {dashboardExtracted && (
+                <div className="dashboard-test-extracted">
+                  <h2>Extracted Data</h2>
+                  <div className="dashboard-test-preview">
+                    <pre>{JSON.stringify(dashboardExtracted, null, 2)}</pre>
+                  </div>
+
+                  <div className="dashboard-test-analyze">
+                    <h3>Ask About Dashboard</h3>
+                    <input
+                      type="text"
+                      className="dashboard-test-input"
+                      value={dashboardQuestion}
+                      onChange={(e) => setDashboardQuestion(e.target.value)}
+                      placeholder="e.g., Why are these metrics the way they are?"
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !dashboardAnalyzing) {
+                          handleDashboardAnalyze();
+                        }
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="btn-primary"
+                      onClick={handleDashboardAnalyze}
+                      disabled={!dashboardQuestion.trim() || dashboardAnalyzing}
+                    >
+                      {dashboardAnalyzing ? "Analyzing..." : "Analyze"}
+                    </button>
+                  </div>
+
+                  {dashboardAnalysisResult && (
+                    <div className="dashboard-test-result">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {dashboardAnalysisResult}
+                      </ReactMarkdown>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -1809,6 +2029,126 @@ export default function HorizonBotPage() {
           color: var(--text-tertiary);
         }
 
+        /* Dashboard Test Section */
+        .dashboard-test-section {
+          flex: 1;
+          overflow: hidden;
+        }
+
+        .dashboard-test-container {
+          height: 100%;
+          display: flex;
+          flex-direction: column;
+          overflow: hidden;
+        }
+
+        .dashboard-test-header {
+          padding: 2rem 1rem;
+          border-bottom: 1px solid var(--border);
+        }
+
+        .dashboard-test-title {
+          font-size: 1.75rem;
+          font-weight: 700;
+          color: var(--text-primary);
+          margin-bottom: 0.5rem;
+        }
+
+        .dashboard-test-subtitle {
+          font-size: 0.95rem;
+          color: var(--text-secondary);
+        }
+
+        .dashboard-test-upload {
+          padding: 2rem 1rem;
+          border-bottom: 1px solid var(--border);
+        }
+
+        .dashboard-test-actions {
+          display: flex;
+          gap: 0.75rem;
+          margin-top: 1rem;
+        }
+
+        .dashboard-test-extracted {
+          flex: 1;
+          overflow-y: auto;
+          padding: 1.5rem;
+        }
+
+        .dashboard-test-extracted h2 {
+          font-size: 1.1rem;
+          font-weight: 600;
+          color: var(--text-primary);
+          margin-bottom: 1rem;
+        }
+
+        .dashboard-test-extracted h3 {
+          font-size: 0.95rem;
+          font-weight: 600;
+          color: var(--text-primary);
+          margin-top: 1.5rem;
+          margin-bottom: 0.75rem;
+        }
+
+        .dashboard-test-preview {
+          background: var(--surface);
+          border: 1px solid var(--border);
+          border-radius: 8px;
+          padding: 1rem;
+          overflow-x: auto;
+          margin-bottom: 1.5rem;
+          max-height: 200px;
+          overflow-y: auto;
+        }
+
+        .dashboard-test-preview pre {
+          font-size: 0.75rem;
+          color: var(--text-secondary);
+          line-height: 1.5;
+          white-space: pre-wrap;
+          word-break: break-word;
+        }
+
+        .dashboard-test-analyze {
+          display: flex;
+          gap: 0.75rem;
+          align-items: flex-end;
+          margin-bottom: 1.5rem;
+        }
+
+        .dashboard-test-input {
+          flex: 1;
+          background: var(--surface);
+          border: 1px solid var(--border);
+          border-radius: 8px;
+          padding: 0.75rem 1rem;
+          color: var(--text-primary);
+          font-size: 0.9rem;
+          font-family: inherit;
+        }
+
+        .dashboard-test-input::placeholder {
+          color: var(--text-tertiary);
+        }
+
+        .dashboard-test-result {
+          background: var(--surface);
+          border: 1px solid var(--border);
+          border-radius: 8px;
+          padding: 1.25rem;
+        }
+
+        .dashboard-test-result h3 {
+          margin: 0 0 1rem 0;
+        }
+
+        .dashboard-test-result-content {
+          color: var(--text-primary);
+          line-height: 1.6;
+          font-size: 0.95rem;
+        }
+
         /* Responsive */
         @media (max-width: 768px) {
           .header-inner {
@@ -1846,6 +2186,15 @@ export default function HorizonBotPage() {
 
           .docs-grid {
             grid-template-columns: 1fr;
+          }
+
+          .dashboard-test-analyze {
+            flex-direction: column;
+            align-items: stretch;
+          }
+
+          .dashboard-test-actions {
+            flex-direction: column;
           }
         }
       `}</style>
