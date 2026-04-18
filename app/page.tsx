@@ -556,8 +556,26 @@ export default function HorizonBotPage() {
     if (e) e.preventDefault();
     const question = dashboardChatInput.trim();
     if (!question || !dashboardReportData || dashboardChatLoading) return;
+
+    const newUserMsg = { role: "user" as const, content: question };
+
+    // Build the message list to send BEFORE updating state so React's async
+    // batching doesn't cause us to capture a stale snapshot.
+    const historyToSend: { role: "user" | "assistant"; content: string }[] = [
+      ...dashboardMessages,
+      newUserMsg,
+    ];
+
+    function updateLastMessage(content: string) {
+      setDashboardMessages((prev) => {
+        const updated = [...prev];
+        updated[updated.length - 1] = { role: "assistant" as const, content };
+        return updated;
+      });
+    }
+
     setDashboardChatInput("");
-    setDashboardMessages((prev) => [...prev, { role: "user" as const, content: question }]);
+    setDashboardMessages((prev) => [...prev, newUserMsg]);
     setDashboardChatLoading(true);
     setDashboardMessages((prev) => [...prev, { role: "assistant" as const, content: "" }]);
     try {
@@ -565,7 +583,7 @@ export default function HorizonBotPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          messages: [{ role: "user", content: question }],
+          messages: historyToSend,
           mode: "dashboard-analysis",
           reportData: dashboardReportData,
         }),
@@ -595,11 +613,7 @@ export default function HorizonBotPage() {
               else if (json.text) delta = json.text;
               if (delta) {
                 result += delta;
-                setDashboardMessages((prev) => {
-                  const updated = [...prev];
-                  updated[updated.length - 1] = { role: "assistant", content: result };
-                  return updated;
-                });
+                updateLastMessage(result);
               }
             } catch {
               // skip non-JSON lines
@@ -610,19 +624,11 @@ export default function HorizonBotPage() {
         reader.cancel();
       }
       if (!result.trim()) {
-        setDashboardMessages((prev) => {
-          const updated = [...prev];
-          updated[updated.length - 1] = { role: "assistant", content: "No response received. Please try again." };
-          return updated;
-        });
+        updateLastMessage("No response received. Please try again.");
       }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : "Analysis failed.";
-      setDashboardMessages((prev) => {
-        const updated = [...prev];
-        updated[updated.length - 1] = { role: "assistant", content: `Error: ${errorMsg}` };
-        return updated;
-      });
+      updateLastMessage(`Error: ${errorMsg}`);
     } finally {
       setDashboardChatLoading(false);
     }

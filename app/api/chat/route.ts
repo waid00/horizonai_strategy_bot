@@ -287,31 +287,28 @@ RESPONSE GUIDELINES:
 
   if (mode === "dashboard-analysis") {
     responseFormatInstructions = `
-RESPONSE FORMAT (Dashboard Analysis mode):
-Write your analysis as natural flowing paragraphs and prose. Do not use hardcoded section headers or bullet points. 
-Simply discuss the report's visualizations, metrics, and strategic alignment in conversational paragraphs that flow naturally from one thought to the next.`;
+RESPONSE FORMAT:
+Match your format to what the user asked. Use flowing prose for broad insight or summary questions. Use bullet points when listing items. Use a markdown table for comparisons. Never force a fixed structure — let the question guide the shape of the answer.`;
 
     modeInstructions = `
 DASHBOARD ANALYSIS MODE:
 
-CRITICAL: Check if reportData.report contains "extractedVisualizations":
-- If YES (extractedVisualizations with a non-zero 'count'): Use the ACTUAL extracted visualization names. Do NOT infer - read them directly.
-- If NO or count is 0 (empty list): The file is in binary format with no extractable visualizations. Tell user to export as .pbip format for detailed analysis.
+The user has uploaded a Power BI report (.pbip or .pbix). The extracted report data is attached to the user's message as POWER BI REPORT DATA (JSON).
 
-EXTRACTION MODE (when extractedVisualizations with actual data is found):
-  a. LIST VISUALIZATIONS: Start by naming the specific visualizations found. Example: "This dashboard contains the following visualizations: Revenue Trend (line chart), Regional Sales Breakdown (bar chart), Profit Margin KPI (metric), Customer Churn Rate (gauge), Market Share Distribution (pie chart), Top Products (table)..."
-  b. IDENTIFY METRICS: State the key metrics being tracked based on the visualization names and extracted measures.
-  c. DESCRIBE PURPOSE: Explain what this dashboard is designed to monitor and track based on these specific visualizations.
-  d. CROSS-REFERENCE STRATEGY: Link each significant metric/visualization to Horizon Bank's strategic priorities from CONTEXT DOCUMENTS.
-  e. PROVIDE INSIGHTS: In natural prose, explain what performance and trends this dashboard reveals.
+Your primary task is to answer the user's SPECIFIC QUESTION about this dashboard. Do NOT run a fixed analysis regardless of what was asked. The user may ask anything, for example:
+- "Why are the graphs the way they are?"
+- "Tell me the insights"
+- "Why is this dashboard relevant?"
+- "Give me a summary of what you see"
+- Any other question about the data, metrics, trends, or purpose
 
-EMPTY/FALLBACK MODE (when extractedVisualizations is empty or count is 0):
-  a. ACKNOWLEDGE FORMAT LIMITATION: Explain that the .pbix file's binary format prevents extraction of specific visualization details.
-  b. SUGGEST EXPORT: Tell user to export the report as .pbip (Power BI Project format) which is JSON-based and fully extractable.
-  c. PROVIDE STRATEGIC CONTEXT: Reference Horizon Bank's key KPIs and what strategic areas they typically measure (revenue, efficiency, customer satisfaction, compliance).
-  d. Offer to analyze if they provide the .pbip format.
+How to use the POWER BI REPORT DATA:
+- Reference extracted visualization names, chart types, tables, measures, and columns by their actual names when they are present in the data.
+- If "extractedVisualizations" has a non-zero count, use those names directly.
+- If the extracted data is sparse (common with .pbix binary format), answer based on what IS available and, if helpful, mention that exporting as .pbip would unlock richer detail. Do not refuse to answer just because extraction is incomplete.
 
-FORMAT: Natural flowing paragraphs without section headers, numbered lists, or artificial structure.`;
+STRATEGY CONTEXT:
+The CONTEXT DOCUMENTS section below contains Horizon Bank's strategy documents. Use them only if the user's question touches on strategic relevance, alignment, or business context. For purely data-focused questions (e.g. "explain these graphs"), you do not need to reference them.`;
 
 
   } else if (mode === "gap-analysis") {
@@ -358,6 +355,23 @@ Answer the user's question directly and helpfully using the CONTEXT DOCUMENTS.
 - "What are our KPIs?" → list the KPIs with their current and target states from the context.
 - "Does X align with our strategy?" / "Is this aligned?" → give a clear YES or NO verdict first, then explain why using specific evidence from the context documents. Even if the context only partially covers the topic, give your best-reasoned verdict based on what is documented.
 - If asked about a concept not explicitly in the context (e.g. a generation, role, or team not named in the documents), use the closest relevant context to give a helpful answer and acknowledge what the documents don't cover.`;
+  }
+
+  // For dashboard-analysis the primary context is the report data embedded in the user
+  // message. Strategy documents are secondary. Return a standalone prompt without the
+  // "CONTEXT FIRST" constraints that would force the model to ignore the report data.
+  if (mode === "dashboard-analysis") {
+    const supplementaryContext =
+      retrievedChunks.length > 0
+        ? `\nSUPPLEMENTARY STRATEGY CONTEXT (use only if the user's question concerns strategic relevance or alignment):\n${contextBlock}`
+        : "";
+
+    return `You are a Power BI dashboard analyst at Horizon Bank. Your job is to answer questions about the Power BI report that the user has uploaded.
+
+${responseFormatInstructions}
+
+${modeInstructions}
+${supplementaryContext}`;
   }
 
   return `${baseRole}
@@ -430,30 +444,36 @@ export async function POST(req: NextRequest) {
     const searchQuery = extractSearchIntent(lastUserMessage);
 
     // ── Step 1: Semantic retrieval ─────────────────────────────────────────
+    // dashboard-analysis uses the uploaded report data as its primary context,
+    // so there is no need to search strategy documents via vector search.
     console.log(`[RAG] query="${searchQuery.slice(0, 80)}" mode=${mode}`);
     let retrievedChunks: MatchedDocument[] = [];
-    try {
-      retrievedChunks = await retrieveContextWithFallback(searchQuery);
-      console.log(`[RAG] retrieval complete chunks=${retrievedChunks.length}` +
-        (retrievedChunks.length > 0
-          ? ` top_similarity=${retrievedChunks[0].similarity.toFixed(3)} top_domain=${retrievedChunks[0].metadata?.domain ?? "unknown"}`
-          : " – no chunks found, will respond with insufficient-data message"));
-    } catch (retrievalError) {
-      const msg = retrievalError instanceof Error ? retrievalError.message : String(retrievalError);
-      console.error("[RAG] Retrieval failed:", msg);
+    if (mode !== "dashboard-analysis") {
+      try {
+        retrievedChunks = await retrieveContextWithFallback(searchQuery);
+        console.log(`[RAG] retrieval complete chunks=${retrievedChunks.length}` +
+          (retrievedChunks.length > 0
+            ? ` top_similarity=${retrievedChunks[0].similarity.toFixed(3)} top_domain=${retrievedChunks[0].metadata?.domain ?? "unknown"}`
+            : " – no chunks found, will respond with insufficient-data message"));
+      } catch (retrievalError) {
+        const msg = retrievalError instanceof Error ? retrievalError.message : String(retrievalError);
+        console.error("[RAG] Retrieval failed:", msg);
 
-      // Surface the RPC error to the client so the user can act on it.
-      // A common cause: the match_documents function hasn't been created yet
-      // (run supabase/schema.sql in the Supabase SQL Editor).
-      return new Response(
-        JSON.stringify({
-          error:
-            "RAG retrieval error – the Supabase match_documents function may not exist. " +
-            "Run supabase/schema.sql in the Supabase SQL Editor, then retry. " +
-            "Visit /api/health for a full diagnostic. Details: " + msg,
-        }),
-        { status: 500, headers: { "Content-Type": "application/json" } }
-      );
+        // Surface the RPC error to the client so the user can act on it.
+        // A common cause: the match_documents function hasn't been created yet
+        // (run supabase/schema.sql in the Supabase SQL Editor).
+        return new Response(
+          JSON.stringify({
+            error:
+              "RAG retrieval error – the Supabase match_documents function may not exist. " +
+              "Run supabase/schema.sql in the Supabase SQL Editor, then retry. " +
+              "Visit /api/health for a full diagnostic. Details: " + msg,
+          }),
+          { status: 500, headers: { "Content-Type": "application/json" } }
+        );
+      }
+    } else {
+      console.log("[RAG] Skipping vector retrieval for dashboard-analysis mode");
     }
 
     // ── Step 2: Build system prompt with injected context ─────────────────
