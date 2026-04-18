@@ -4,10 +4,26 @@ import { PDFParse } from "pdf-parse";
 import mammoth from "mammoth";
 
 /**
- * Parse a single CSV line, respecting double-quoted fields that may
- * contain commas or newlines.
+ * Detects the field delimiter used in a CSV file by inspecting the first line.
+ * Preference order: tab → semicolon → comma.
+ * European CSV exports (e.g. Czech locale) commonly use semicolons; tab-separated
+ * exports are also frequent.  Comma is the fallback for standard RFC 4180 files.
  */
-function parseCsvLine(line) {
+function detectDelimiter(firstLine) {
+  const tabCount = (firstLine.match(/\t/g) ?? []).length;
+  const semicolonCount = (firstLine.match(/;/g) ?? []).length;
+  const commaCount = (firstLine.match(/,/g) ?? []).length;
+
+  if (tabCount > 0 && tabCount >= semicolonCount && tabCount >= commaCount) return "\t";
+  if (semicolonCount > 0 && semicolonCount >= commaCount) return ";";
+  return ",";
+}
+
+/**
+ * Parse a single CSV line using the given delimiter, respecting double-quoted
+ * fields that may contain the delimiter character or newlines.
+ */
+function parseCsvLine(line, delimiter = ",") {
   const fields = [];
   let field = "";
   let inQuotes = false;
@@ -30,7 +46,7 @@ function parseCsvLine(line) {
     } else if (ch === '"') {
       inQuotes = true;
       i++;
-    } else if (ch === ",") {
+    } else if (ch === delimiter) {
       fields.push(field.trim());
       field = "";
       i++;
@@ -44,27 +60,59 @@ function parseCsvLine(line) {
 }
 
 /**
- * Convert a CSV string into an array of prose sentences.
- * Each row becomes:  "Header1: Value1 | Header2: Value2 | ..."
- * This gives every RAG chunk full column context.
+ * Converts a CSV string into an array of self-contained natural language
+ * sentences so that every RAG chunk carries full column context.
+ *
+ * Automatically detects the delimiter (tab, semicolon, or comma) from the
+ * first non-empty line.
+ *
+ * Example input (semicolon-delimited):
+ *   KPI;Current State;Target State
+ *   Active Digital Clients;55%;80%
+ *   Cost-to-Income;60%;40%
+ *
+ * Example output:
+ *   "KPI 'Active Digital Clients': Current State is 55%, Target State is 80%."
+ *   "KPI 'Cost-to-Income': Current State is 60%, Target State is 40%."
  */
 function csvToProse(raw) {
   const lines = raw.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
   const nonEmpty = lines.filter((l) => l.trim().length > 0);
   if (nonEmpty.length < 2) return null; // no data rows
 
-  const headers = parseCsvLine(nonEmpty[0]);
+  const delimiter = detectDelimiter(nonEmpty[0]);
+  const headers = parseCsvLine(nonEmpty[0], delimiter);
   const sentences = [];
 
   for (let i = 1; i < nonEmpty.length; i++) {
-    const values = parseCsvLine(nonEmpty[i]);
-    const parts = headers
+    const values = parseCsvLine(nonEmpty[i], delimiter);
+
+    // Build key-value pairs for all columns
+    const pairs = headers
       .map((h, idx) => {
         const v = (values[idx] ?? "").trim();
-        return v.length > 0 ? `${h}: ${v}` : null;
+        return h.trim() && v ? { header: h.trim(), value: v } : null;
       })
       .filter(Boolean);
-    if (parts.length > 0) sentences.push(parts.join(" | "));
+
+    if (pairs.length === 0) continue;
+
+    // Generate a natural language sentence:
+    //   "[header0] '[value0]': [header1] is [value1], [header2] is [value2]."
+    // When there is only one column, just emit "header: value".
+    let sentence;
+    if (pairs.length === 1) {
+      sentence = `${pairs[0].header}: ${pairs[0].value}.`;
+    } else {
+      const subject = `${pairs[0].header} '${pairs[0].value}'`;
+      const predicates = pairs
+        .slice(1)
+        .map((p) => `${p.header} is ${p.value}`)
+        .join(", ");
+      sentence = `${subject}: ${predicates}.`;
+    }
+
+    sentences.push(sentence);
   }
 
   return sentences;
