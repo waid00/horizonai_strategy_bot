@@ -6,8 +6,10 @@
  * Supported formats: .pdf, .docx, .txt, .md, .csv
  *
  * Usage:
- *   npm run ingest                     # reads from ./docs and ./data/uploads
- *   npm run ingest -- ./my-folder      # reads from a custom folder only
+ *   npm run ingest                          # reads from ./docs and ./data/uploads
+ *   npm run ingest -- ./my-folder          # reads from a custom folder only
+ *   npm run ingest -- ./my-folder --clean  # clear table then ingest
+ *   npm run ingest -- --clean              # clear table, then ingest from default folders
  */
 
 import { createClient } from "@supabase/supabase-js";
@@ -24,6 +26,15 @@ const supabase = createClient(
 );
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+// ─── Clear Documents Table ────────────────────────────────────────────────────
+
+async function clearDocumentsTable() {
+  console.log("🧹  Clearing documents table...");
+  const { error } = await supabase.from("documents").delete().gt("id", 0);
+  if (error) throw new Error(`Failed to clear documents: ${error.message}`);
+  console.log("✅  Documents table cleared.");
+}
 
 // ─── Chunking ────────────────────────────────────────────────────────────────
 
@@ -75,17 +86,28 @@ async function upsertChunks(chunks) {
 // ─── Main Pipeline ────────────────────────────────────────────────────────────
 
 async function ingest() {
-  const folderPathArg = process.argv[2];
-  const folderPaths = folderPathArg
+  const shouldClean = process.argv.includes("--clean");
+  
+  // If --clean is present, remove it and get remaining args
+  const filteredArgs = process.argv.filter(arg => arg !== "--clean");
+  const folderPathArg = filteredArgs[2];
+  
+  // If first remaining arg starts with --, it's a flag, not a path
+  const folderPaths = folderPathArg && !folderPathArg.startsWith("--")
     ? [folderPathArg]
     : ["./docs", "./data/uploads"];
 
   console.log("🏦  Horizon Bank RAG – Ingestion Pipeline\n");
+  
+  if (shouldClean) {
+    await clearDocumentsTable();
+  }
+  
   console.log(`📂  Reading documents from: ${folderPaths.join(", ")}\n`);
 
   const missingFolders = folderPaths.filter((folderPath) => !fs.existsSync(folderPath));
 
-  if (folderPathArg && missingFolders.length > 0) {
+  if (folderPathArg && !folderPathArg.startsWith("--") && missingFolders.length > 0) {
     console.error(`❌  Folder not found: ${folderPathArg}`);
     process.exit(1);
   }

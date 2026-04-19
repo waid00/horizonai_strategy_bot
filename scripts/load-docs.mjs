@@ -119,12 +119,60 @@ function csvToProse(raw) {
 }
 
 /**
+ * Converts a CSV string into an array of JSON objects.
+ * Each row becomes a JSON object with column headers as keys.
+ *
+ * This is better for LLMs because it preserves explicit key-value relationships
+ * and prevents hallucination due to misaligned headers/values.
+ *
+ * Example input (semicolon-delimited):
+ *   KPI;Current State;Target State
+ *   Active Digital Clients;55%;80%
+ *   Cost-to-Income;60%;40%
+ *
+ * Example output (as stringified JSON):
+ *   {"KPI":"Active Digital Clients","Current State":"55%","Target State":"80%"}
+ *   {"KPI":"Cost-to-Income","Current State":"60%","Target State":"40%"}
+ */
+function csvToJson(raw) {
+  const lines = raw.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+  const nonEmpty = lines.filter((l) => l.trim().length > 0);
+  if (nonEmpty.length < 2) return null; // no data rows
+
+  const delimiter = detectDelimiter(nonEmpty[0]);
+  const headers = parseCsvLine(nonEmpty[0], delimiter);
+  const jsonLines = [];
+
+  for (let i = 1; i < nonEmpty.length; i++) {
+    const values = parseCsvLine(nonEmpty[i], delimiter);
+    const row = {};
+
+    // Build key-value pairs for all columns
+    for (let j = 0; j < headers.length; j++) {
+      const header = headers[j].trim();
+      const value = (values[j] ?? "").trim();
+      if (header && value) {
+        row[header] = value;
+      }
+    }
+
+    // Only include non-empty rows
+    if (Object.keys(row).length > 0) {
+      jsonLines.push(JSON.stringify(row));
+    }
+  }
+
+  return jsonLines.length > 0 ? jsonLines : null;
+}
+
+/**
  * Place your documents in a /docs folder in the project root.
  * Supported formats: .pdf, .docx, .txt, .md, .csv
  * Returns array of { content, metadata } objects ready for ingestion.
  *
- * CSV files are converted to prose (one sentence per row) so that every
- * chunk retrieved by the RAG system carries full column context.
+ * CSV files are converted to JSON objects (one JSON object per row) so that every
+ * chunk retrieved by the RAG system carries explicit key-value relationships,
+ * making it harder for the LLM to hallucinate missing values.
  */
 export async function loadDocumentsFromFolder(folderPath = "./docs") {
   const files = fs.readdirSync(folderPath);
@@ -151,18 +199,21 @@ export async function loadDocumentsFromFolder(folderPath = "./docs") {
 
       } else if (ext === ".csv") {
         const raw = fs.readFileSync(filePath, "utf-8");
-        const sentences = csvToProse(raw);
-        if (!sentences || sentences.length === 0) {
+        const jsonLines = csvToJson(raw);
+        if (!jsonLines || jsonLines.length === 0) {
           console.log(`⚠️  Skipped empty/header-only CSV: ${file}`);
           continue;
         }
-        // Group rows into chunks of ~10 so each chunk stays focused.
+        // Group JSON rows into chunks of ~10 so each chunk stays focused.
         const ROWS_PER_CHUNK = 10;
-        for (let i = 0; i < sentences.length; i += ROWS_PER_CHUNK) {
-          const chunkContent = sentences.slice(i, i + ROWS_PER_CHUNK).join("\n");
-          documents.push({ content: chunkContent, metadata: { domain: "Custom", source: file, tags: ["csv"] } });
+        for (let i = 0; i < jsonLines.length; i += ROWS_PER_CHUNK) {
+          const chunkContent = jsonLines.slice(i, i + ROWS_PER_CHUNK).join("\n");
+          documents.push({ 
+            content: chunkContent, 
+            metadata: { domain: "Custom", source: file, tags: ["csv", "json"] } 
+          });
         }
-        console.log(`📊 Loaded CSV: ${file} (${sentences.length} rows → ${Math.ceil(sentences.length / ROWS_PER_CHUNK)} chunks)`);
+        console.log(`📊 Loaded CSV: ${file} (${jsonLines.length} rows → ${Math.ceil(jsonLines.length / ROWS_PER_CHUNK)} chunks)`);
         continue; // already pushed; skip the generic push below
 
       } else if (ext === ".txt" || ext === ".md") {
