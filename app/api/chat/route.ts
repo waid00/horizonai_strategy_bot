@@ -81,40 +81,92 @@ interface ChatRequestBody {
     model?: Record<string, unknown>;
     metadata?: Record<string, unknown>;
   };
+  dashboardImage?: string;        // base64 data URL of a dashboard screenshot for vision analysis
 }
+
+// ─── Gold Table Definitions ───────────────────────────────────────────────────
+
+/**
+ * The four Supabase gold tables populated by the Databricks sync.
+ * These names match DATABRICKS_TABLES entries like
+ * vse_banka.strategie.gold_dim_kpi → stored in table `gold_dim_kpi`.
+ */
+const GOLD_TABLES: Array<{ name: string; columns: string[] }> = [
+  { name: "gold_dim_kpi",    columns: ["kpi_id", "kpi_name", "kpi_type", "target_value", "initial_value", "unit"] },
+  { name: "gold_dim_period", columns: ["period_id", "period", "quarter", "year"] },
+  { name: "gold_dim_team",   columns: ["team_id", "team_name", "domain"] },
+  { name: "gold_fact_kpi",   columns: ["period_id", "kpi_id", "team_id", "value", "dq_flag"] },
+];
 
 // ─── Schema Fetch ─────────────────────────────────────────────────────────────
 
 async function fetchDataSchema(): Promise<SchemaTable[]> {
-  const supabaseUrl = process.env.SUPABASE_URL;
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!supabaseUrl || !serviceRoleKey) return [];
+  if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) return [];
 
-  try {
-    const { data: samples } = await getSupabase()
-      .from("data_records")
-      .select("table_name, row_data")
-      .limit(1000);
+  const tables: SchemaTable[] = [];
 
-    if (!samples || samples.length === 0) return [];
+  for (const gt of GOLD_TABLES) {
+    try {
+      const { count } = await getSupabase()
+        .from(gt.name)
+        .select("*", { count: "exact", head: true });
 
-    // Group by table_name
-    const tableMap = new Map<string, Record<string, unknown>[]>();
-    for (const row of samples) {
-      const tbl = row.table_name as string;
-      if (!tableMap.has(tbl)) tableMap.set(tbl, []);
-      tableMap.get(tbl)!.push(row.row_data as Record<string, unknown>);
+      tables.push({ table_name: gt.name, row_count: count ?? 0, columns: gt.columns });
+    } catch {
+      // Include the table definition even if the count fails
+      tables.push({ table_name: gt.name, row_count: 0, columns: gt.columns });
     }
-
-    const tables: SchemaTable[] = [];
-    for (const [tableName, rows] of tableMap.entries()) {
-      const columns = rows.length > 0 ? Object.keys(rows[0]) : [];
-      tables.push({ table_name: tableName, row_count: rows.length, columns });
-    }
-    return tables;
-  } catch {
-    return [];
   }
+
+  return tables;
+}
+
+/**
+ * Fetches rows from the four gold tables and formats them as a readable
+ * text block so the LLM can cross-reference chart values against actual data.
+ */
+async function fetchDashboardData(): Promise<string> {
+  const parts: string[] = [];
+
+  for (const gt of GOLD_TABLES) {
+    try {
+      const { data, error } = await getSupabase()
+        .from(gt.name)
+        .select("*")
+        .limit(200);
+
+      if (error) {
+        parts.push(`Table "${gt.name}": error – ${error.message}`);
+        continue;
+      }
+
+      const rows = (data ?? []) as Record<string, unknown>[];
+      if (rows.length === 0) {
+        parts.push(`Table "${gt.name}": no rows (sync may not have run yet).`);
+        continue;
+      }
+
+      const columns = Object.keys(rows[0]);
+      const preview = rows.slice(0, 50);
+      parts.push(
+        `Table "${gt.name}" (${rows.length} rows, columns: ${columns.join(", ")}):\n` +
+          JSON.stringify(preview, null, 2)
+      );
+    } catch (err) {
+      parts.push(`Table "${gt.name}": fetch failed – ${String(err)}`);
+    }
+  }
+
+  if (parts.length === 0) {
+    return "No gold tables found. Run the Databricks sync first.";
+  }
+
+  const result = parts.join("\n\n---\n\n");
+  // Cap at ~150 KB to stay well within the LLM context window
+  const MAX_DATA_CHARS = 150_000;
+  return result.length > MAX_DATA_CHARS
+    ? result.slice(0, MAX_DATA_CHARS) + "\n\n[... data truncated ...]"
+    : result;
 }
 
 function extractMessageText(message: ChatRequestBody["messages"][number]): string {
@@ -249,7 +301,7 @@ Your task:
   a. Understand what the user wants to visualise.
   b. Use the AVAILABLE DATA SCHEMA below to write SQL queries.
   c. Output a brief explanation (2–3 sentences) and then the <dashboard> block.
-  d. Each chart SQL must be a valid SELECT against data_records (see RESPONSE FORMAT).
+  d. Each chart SQL must be a valid SELECT against one of the gold tables (see RESPONSE FORMAT).
 
 AVAILABLE DATA SCHEMA:
 ${schemaBlock}`;
@@ -287,31 +339,24 @@ RESPONSE GUIDELINES:
 
   if (mode === "dashboard-analysis") {
     responseFormatInstructions = `
-RESPONSE FORMAT (Dashboard Analysis mode):
-Write your analysis as natural flowing paragraphs and prose. Do not use hardcoded section headers or bullet points. 
-Simply discuss the report's visualizations, metrics, and strategic alignment in conversational paragraphs that flow naturally from one thought to the next.`;
+RESPONSE FORMAT:
+Match your format to what the user asked. Use flowing prose for broad insight or summary questions. Use bullet points when listing items. Use a markdown table for comparisons. Never force a fixed structure — let the question guide the shape of the answer.`;
 
     modeInstructions = `
 DASHBOARD ANALYSIS MODE:
 
-CRITICAL: Check if reportData.report contains "extractedVisualizations":
-- If YES (extractedVisualizations with a non-zero 'count'): Use the ACTUAL extracted visualization names. Do NOT infer - read them directly.
-- If NO or count is 0 (empty list): The file is in binary format with no extractable visualizations. Tell user to export as .pbip format for detailed analysis.
+You are analyzing a business dashboard for Horizon Bank. The user's message contains:
+• Their question.
+• SUPABASE TABLE DATA — the actual underlying database records that power this dashboard. Use these to find real values, counts, and patterns that explain what the charts show.
+• Optionally, a SCREENSHOT of the dashboard — if one is attached, use your vision capability to read chart titles, axis labels, data values, legends, trends, colours, and KPI numbers directly from the image.
+• Optionally, extracted Power BI report structure (visualization names, data model metadata).
 
-EXTRACTION MODE (when extractedVisualizations with actual data is found):
-  a. LIST VISUALIZATIONS: Start by naming the specific visualizations found. Example: "This dashboard contains the following visualizations: Revenue Trend (line chart), Regional Sales Breakdown (bar chart), Profit Margin KPI (metric), Customer Churn Rate (gauge), Market Share Distribution (pie chart), Top Products (table)..."
-  b. IDENTIFY METRICS: State the key metrics being tracked based on the visualization names and extracted measures.
-  c. DESCRIBE PURPOSE: Explain what this dashboard is designed to monitor and track based on these specific visualizations.
-  d. CROSS-REFERENCE STRATEGY: Link each significant metric/visualization to Horizon Bank's strategic priorities from CONTEXT DOCUMENTS.
-  e. PROVIDE INSIGHTS: In natural prose, explain what performance and trends this dashboard reveals.
+Your 3-step analysis process:
+1. READ the visual: If a screenshot is attached, examine it carefully — identify the chart types displayed, read the axis labels and values, note trends, outliers, or patterns visible in the charts.
+2. UNDERSTAND the question: Determine exactly what the user wants to know. They may ask anything: "why do the graphs look this way?", "tell me the key insights", "why is this dashboard relevant?", "give me a summary", or any other question. Answer what was actually asked.
+3. CROSS-REFERENCE the data: Use the SUPABASE TABLE DATA to confirm, quantify, or explain what the charts show. Find the relevant rows and values that underlie the visual patterns and use them to give a data-grounded answer.
 
-EMPTY/FALLBACK MODE (when extractedVisualizations is empty or count is 0):
-  a. ACKNOWLEDGE FORMAT LIMITATION: Explain that the .pbix file's binary format prevents extraction of specific visualization details.
-  b. SUGGEST EXPORT: Tell user to export the report as .pbip (Power BI Project format) which is JSON-based and fully extractable.
-  c. PROVIDE STRATEGIC CONTEXT: Reference Horizon Bank's key KPIs and what strategic areas they typically measure (revenue, efficiency, customer satisfaction, compliance).
-  d. Offer to analyze if they provide the .pbip format.
-
-FORMAT: Natural flowing paragraphs without section headers, numbered lists, or artificial structure.`;
+Do NOT run a fixed analysis script. Do NOT list all charts mechanically. Focus entirely on the user's specific question.`;
 
 
   } else if (mode === "gap-analysis") {
@@ -336,8 +381,13 @@ The dashboard block MUST use this exact format (no extra whitespace inside the t
 <dashboard>[{"title":"Chart Title","type":"bar","sql":"SELECT ..."},{"title":"Chart 2","type":"line","sql":"SELECT ..."}]</dashboard>
 Rules for the SQL inside the block:
 - Each SQL must be a single SELECT statement.
-- Queries MUST reference the data_records table.
-- Use the pattern: SELECT row_data->>'column_name' AS column_name, ... FROM data_records WHERE table_name = '<table>' LIMIT 50
+- Queries MUST use one of the gold tables: gold_dim_kpi, gold_dim_period, gold_dim_team, gold_fact_kpi.
+- Simple examples:
+    SELECT kpi_name, target_value FROM gold_dim_kpi LIMIT 50
+    SELECT period, year FROM gold_dim_period LIMIT 50
+    SELECT team_name, domain FROM gold_dim_team LIMIT 50
+- For fact data with dimension labels, use JOINs:
+    SELECT k.kpi_name, p.period, f.value FROM gold_fact_kpi f JOIN gold_dim_kpi k ON f.kpi_id = k.kpi_id JOIN gold_dim_period p ON f.period_id = p.period_id LIMIT 50
 - Supported chart types: bar, line, pie, table
 - Maximum 6 charts per dashboard.
 - Do NOT include semicolons.`;
@@ -358,6 +408,23 @@ Answer the user's question directly and helpfully using the CONTEXT DOCUMENTS.
 - "What are our KPIs?" → list the KPIs with their current and target states from the context.
 - "Does X align with our strategy?" / "Is this aligned?" → give a clear YES or NO verdict first, then explain why using specific evidence from the context documents. Even if the context only partially covers the topic, give your best-reasoned verdict based on what is documented.
 - If asked about a concept not explicitly in the context (e.g. a generation, role, or team not named in the documents), use the closest relevant context to give a helpful answer and acknowledge what the documents don't cover.`;
+  }
+
+  // For dashboard-analysis the primary context is the report data embedded in the user
+  // message. Strategy documents are secondary. Return a standalone prompt without the
+  // "CONTEXT FIRST" constraints that would force the model to ignore the report data.
+  if (mode === "dashboard-analysis") {
+    const supplementaryContext =
+      retrievedChunks.length > 0
+        ? `\nSUPPLEMENTARY STRATEGY CONTEXT (use only if the user's question concerns strategic relevance or alignment):\n${contextBlock}`
+        : "";
+
+    return `You are a business dashboard analyst at Horizon Bank. Your capabilities include visual analysis of dashboard screenshots (using vision) and cross-referencing of the underlying Supabase database records. Answer the user's questions about the dashboard they have shared.
+
+${responseFormatInstructions}
+
+${modeInstructions}
+${supplementaryContext}`;
   }
 
   return `${baseRole}
@@ -388,7 +455,7 @@ export async function POST(req: NextRequest) {
     }
 
     const body: ChatRequestBody = await req.json();
-    const { messages, mode = "chat", externalText, reportData } = body;
+    const { messages, mode = "chat", externalText, reportData, dashboardImage } = body;
 
     // For dashboard mode, fetch the data schema to inject into the prompt
     const dataSchema: SchemaTable[] = mode === "dashboard" ? await fetchDataSchema() : [];
@@ -430,30 +497,36 @@ export async function POST(req: NextRequest) {
     const searchQuery = extractSearchIntent(lastUserMessage);
 
     // ── Step 1: Semantic retrieval ─────────────────────────────────────────
+    // dashboard-analysis uses the uploaded report data as its primary context,
+    // so there is no need to search strategy documents via vector search.
     console.log(`[RAG] query="${searchQuery.slice(0, 80)}" mode=${mode}`);
     let retrievedChunks: MatchedDocument[] = [];
-    try {
-      retrievedChunks = await retrieveContextWithFallback(searchQuery);
-      console.log(`[RAG] retrieval complete chunks=${retrievedChunks.length}` +
-        (retrievedChunks.length > 0
-          ? ` top_similarity=${retrievedChunks[0].similarity.toFixed(3)} top_domain=${retrievedChunks[0].metadata?.domain ?? "unknown"}`
-          : " – no chunks found, will respond with insufficient-data message"));
-    } catch (retrievalError) {
-      const msg = retrievalError instanceof Error ? retrievalError.message : String(retrievalError);
-      console.error("[RAG] Retrieval failed:", msg);
+    if (mode !== "dashboard-analysis") {
+      try {
+        retrievedChunks = await retrieveContextWithFallback(searchQuery);
+        console.log(`[RAG] retrieval complete chunks=${retrievedChunks.length}` +
+          (retrievedChunks.length > 0
+            ? ` top_similarity=${retrievedChunks[0].similarity.toFixed(3)} top_domain=${retrievedChunks[0].metadata?.domain ?? "unknown"}`
+            : " – no chunks found, will respond with insufficient-data message"));
+      } catch (retrievalError) {
+        const msg = retrievalError instanceof Error ? retrievalError.message : String(retrievalError);
+        console.error("[RAG] Retrieval failed:", msg);
 
-      // Surface the RPC error to the client so the user can act on it.
-      // A common cause: the match_documents function hasn't been created yet
-      // (run supabase/schema.sql in the Supabase SQL Editor).
-      return new Response(
-        JSON.stringify({
-          error:
-            "RAG retrieval error – the Supabase match_documents function may not exist. " +
-            "Run supabase/schema.sql in the Supabase SQL Editor, then retry. " +
-            "Visit /api/health for a full diagnostic. Details: " + msg,
-        }),
-        { status: 500, headers: { "Content-Type": "application/json" } }
-      );
+        // Surface the RPC error to the client so the user can act on it.
+        // A common cause: the match_documents function hasn't been created yet
+        // (run supabase/schema.sql in the Supabase SQL Editor).
+        return new Response(
+          JSON.stringify({
+            error:
+              "RAG retrieval error – the Supabase match_documents function may not exist. " +
+              "Run supabase/schema.sql in the Supabase SQL Editor, then retry. " +
+              "Visit /api/health for a full diagnostic. Details: " + msg,
+          }),
+          { status: 500, headers: { "Content-Type": "application/json" } }
+        );
+      }
+    } else {
+      console.log("[RAG] Skipping vector retrieval for dashboard-analysis mode");
     }
 
     // ── Step 2: Build system prompt with injected context ─────────────────
@@ -471,40 +544,65 @@ export async function POST(req: NextRequest) {
           content: `${lastUserMessage}\n\nEXTERNAL TEXT FOR GAP ANALYSIS:\n${externalText}`,
         },
       ];
-    } else if (mode === "dashboard-analysis" && reportData) {
-      // Dashboard analysis: augment last message with report JSON
-      const reportJson = JSON.stringify(reportData, null, 2);
-      const reportSize = reportJson.length;
+    } else if (mode === "dashboard-analysis") {
+      // ── Validate image if provided ──────────────────────────────────────
+      if (dashboardImage) {
+        if (!dashboardImage.startsWith("data:image/")) {
+          return new Response(
+            JSON.stringify({ error: "dashboardImage must be a base64 image data URL (data:image/...)" }),
+            { status: 400, headers: { "Content-Type": "application/json" } }
+          );
+        }
+        if (dashboardImage.length > 20 * 1024 * 1024) {
+          return new Response(
+            JSON.stringify({ error: "Dashboard image too large (max 20 MB base64). Compress before uploading." }),
+            { status: 400, headers: { "Content-Type": "application/json" } }
+          );
+        }
+      }
 
-      if (reportSize > 500 * 1024) {
-        return new Response(
-          JSON.stringify({ error: "Report data too large (max 500KB)" }),
-          { status: 400, headers: { "Content-Type": "application/json" } }
+      // ── Fetch actual Supabase table data for cross-referencing ──────────
+      const supabaseData = await fetchDashboardData();
+
+      // ── Build a compact PBI report summary (structural metadata only) ──
+      let reportSummary = "";
+      if (reportData?.report) {
+        const reportStr = JSON.stringify(reportData.report);
+        const trimmed =
+          reportStr.length > 10_000 ? reportStr.slice(0, 10_000) + "..." : reportStr;
+        reportSummary = `\n\nPOWER BI REPORT STRUCTURE (extracted metadata):\n\`\`\`json\n${trimmed}\n\`\`\``;
+      }
+
+      // ── Assemble text context: question + Supabase data + optional PBI ─
+      const textContent =
+        `${lastUserMessage}\n\nSUPABASE TABLE DATA (cross-reference against what the dashboard shows):\n${supabaseData}${reportSummary}`;
+
+      // ── Build multimodal content if a screenshot was provided ───────────
+      type TextPart = { type: "text"; text: string };
+      type ImagePart = { type: "image"; image: string };
+
+      if (dashboardImage) {
+        const contentParts: Array<TextPart | ImagePart> = [
+          { type: "image", image: dashboardImage },
+          { type: "text", text: textContent },
+        ];
+        augmentedMessages = [
+          ...modelMessages.slice(0, -1),
+          { role: "user" as const, content: contentParts },
+        ];
+        console.log(
+          `[DASHBOARD] Image attached (${(dashboardImage.length / 1024).toFixed(0)} KB base64)`
         );
+      } else {
+        augmentedMessages = [
+          ...modelMessages.slice(0, -1),
+          { role: "user" as const, content: textContent },
+        ];
       }
-
-      // Check if this is a .pbix file (has limitation note)
-      const isPbixFile = reportData.report && 
-        typeof reportData.report === 'object' && 
-        'fileFormat' in reportData.report &&
-        (reportData.report as Record<string, unknown>).fileFormat === '.pbix (Power BI Desktop)';
-
-      let pbixNote = "";
-      if (isPbixFile) {
-        pbixNote = `\n\n⚠️ NOTE: This is a Power BI Desktop (.pbix) file. The binary format limits extractable data.
-For better analysis, please export the report as .pbip (Power BI Project) format, which uses JSON and contains full report definitions with measure names, page layouts, and visualization details.\n`;
-      }
-
-      const lastIndex = augmentedMessages.length - 1;
-      const lastMessage = augmentedMessages[lastIndex];
-
-      augmentedMessages[lastIndex] = {
-        role: "user" as const,
-        content: `${lastMessage.content as string}${pbixNote}\n\nPOWER BI REPORT DATA:\n\`\`\`json\n${reportJson}\n\`\`\``,
-      };
 
       console.log(
-        `[DASHBOARD] Report JSON attached (${(reportSize / 1024).toFixed(1)} KB) for analysis${isPbixFile ? " [PBIX format]" : ""}`
+        `[DASHBOARD] Supabase data: ${(supabaseData.length / 1024).toFixed(1)} KB, ` +
+          `image: ${dashboardImage ? "yes" : "no"}, PBI: ${reportData ? "yes" : "no"}`
       );
     }
 

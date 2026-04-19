@@ -50,6 +50,9 @@ interface ChartResult {
 
 const FORBIDDEN_KEYWORDS = /\b(INSERT|UPDATE|DELETE|DROP|TRUNCATE|ALTER|CREATE|GRANT|REVOKE|EXECUTE|EXEC|CALL|COPY|VACUUM|REINDEX|CLUSTER|LOCK|COMMENT|SET|RESET)\b/i;
 
+/** Gold tables that queries are allowed to reference. */
+const ALLOWED_TABLES = ["gold_dim_kpi", "gold_dim_period", "gold_dim_team", "gold_fact_kpi", "data_records"];
+
 function validateSql(sql: string): string | null {
   const trimmed = sql.trim();
 
@@ -70,9 +73,12 @@ function validateSql(sql: string): string | null {
     return "Statement contains a semicolon – multiple statements are not allowed.";
   }
 
-  // Must reference data_records (prevent queries to sensitive tables)
-  if (!/\bdata_records\b/i.test(trimmed)) {
-    return "Queries must reference the data_records table.";
+  // Must reference at least one allowed table (prevent queries to sensitive tables)
+  const referencesAllowed = ALLOWED_TABLES.some((t) =>
+    new RegExp(`\\b${t}\\b`, "i").test(trimmed)
+  );
+  if (!referencesAllowed) {
+    return `Queries must reference one of: ${ALLOWED_TABLES.join(", ")}.`;
   }
 
   return null; // valid
@@ -122,31 +128,51 @@ async function runSelectQuery(
 
 /**
  * Fallback when the execute_dashboard_query RPC doesn't exist yet.
- * Parses simple "SELECT col1, col2 FROM data_records WHERE table_name = '...'" patterns.
+ * Detects which gold table the query targets and performs a direct select.
+ * Supports simple single-table queries; JOIN queries require the RPC to be set up.
  */
 async function fallbackDirectQuery(
   supabase: SupabaseClient,
   sql: string
 ): Promise<Record<string, unknown>[]> {
-  // Extract table_name filter from the WHERE clause (e.g. WHERE table_name = 'kpis')
-  const tableNameMatch = sql.match(/table_name\s*=\s*'([^']+)'/i);
-  const tableName = tableNameMatch ? tableNameMatch[1] : null;
+  // Determine the target table (first gold/data table name found in the SQL)
+  const ALLOWED = ["gold_dim_kpi", "gold_dim_period", "gold_dim_team", "gold_fact_kpi", "data_records"];
+  let targetTable: string | null = null;
+  for (const t of ALLOWED) {
+    if (new RegExp(`\\b${t}\\b`, "i").test(sql)) {
+      targetTable = t;
+      break;
+    }
+  }
 
-  let query = supabase.from("data_records").select("row_data");
-  if (tableName) {
-    query = query.eq("table_name", tableName);
+  if (!targetTable) {
+    throw new Error("Could not determine target table from SQL for fallback query.");
   }
 
   const limitMatch = sql.match(/LIMIT\s+(\d+)/i);
   const limitVal = limitMatch ? parseInt(limitMatch[1], 10) : 500;
-  query = query.limit(limitVal);
 
-  const { data, error } = await query;
-  if (error) throw new Error(`Direct query failed: ${error.message}`);
+  if (targetTable === "data_records") {
+    // Legacy path: extract table_name filter and unwrap row_data JSONB
+    const tableNameMatch = sql.match(/table_name\s*=\s*'([^']+)'/i);
+    const tableName = tableNameMatch ? tableNameMatch[1] : null;
+    let query = supabase.from("data_records").select("row_data");
+    if (tableName) query = query.eq("table_name", tableName);
+    query = query.limit(limitVal);
+    const { data, error } = await query;
+    if (error) throw new Error(`Direct query failed: ${error.message}`);
+    type DataRecordRow = { row_data: Record<string, unknown> };
+    return ((data ?? []) as DataRecordRow[]).map((r) => r.row_data);
+  }
 
-  // Flatten row_data into the result
-  type DataRecordRow = { row_data: Record<string, unknown> };
-  return ((data ?? []) as DataRecordRow[]).map((r) => r.row_data);
+  // Gold tables: direct select, all columns
+  const { data, error } = await supabase
+    .from(targetTable)
+    .select("*")
+    .limit(limitVal);
+
+  if (error) throw new Error(`Direct query failed on ${targetTable}: ${error.message}`);
+  return (data ?? []) as Record<string, unknown>[];
 }
 
 // ─── Route handler ────────────────────────────────────────────────────────────

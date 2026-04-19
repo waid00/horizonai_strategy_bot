@@ -331,13 +331,17 @@ export default function HorizonBotPage() {
   const [ingestLogs, setIngestLogs] = useState<string[]>([]);
   const [alignmentOpen, setAlignmentOpen] = useState(false);
   const [dashboardFile, setDashboardFile] = useState<File | null>(null);
-  const [dashboardExtracting, setDashboardExtracting] = useState(false);
-  const [dashboardExtracted, setDashboardExtracted] = useState<{ report?: unknown; model?: unknown; metadata?: unknown } | null>(null);
-  const [dashboardExtractionError, setDashboardExtractionError] = useState<string | null>(null);
-  const [dashboardQuestion, setDashboardQuestion] = useState("");
-  const [dashboardAnalyzing, setDashboardAnalyzing] = useState(false);
-  const [dashboardAnalysisResult, setDashboardAnalysisResult] = useState<string | null>(null);
+  const [dashboardSubmitting, setDashboardSubmitting] = useState(false);
+  const [dashboardReportData, setDashboardReportData] = useState<{ report?: unknown; model?: unknown; metadata?: unknown } | null>(null);
+  const [dashboardSubmitError, setDashboardSubmitError] = useState<string | null>(null);
+  const [dashboardMessages, setDashboardMessages] = useState<{ role: "user" | "assistant"; content: string }[]>([]);
+  const [dashboardChatInput, setDashboardChatInput] = useState("");
+  const [dashboardChatLoading, setDashboardChatLoading] = useState(false);
+  const [dashboardImage, setDashboardImage] = useState<string | null>(null);
+  const [dashboardImageName, setDashboardImageName] = useState<string | null>(null);
   const dashboardFileInputRef = useRef<HTMLInputElement>(null);
+  const dashboardImageInputRef = useRef<HTMLInputElement>(null);
+  const dashboardChatEndRef = useRef<HTMLDivElement>(null);
   const [alignmentQueryA, setAlignmentQueryA] = useState("");
   const [alignmentQueryB, setAlignmentQueryB] = useState("");
   const [alignmentDocAId, setAlignmentDocAId] = useState("");
@@ -522,128 +526,202 @@ export default function HorizonBotPage() {
     setAlignmentOpen(true);
   }
 
+  /** Resize and JPEG-compress an image to keep it within a sensible size for the API. */
+  function compressDashboardImage(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      const objectUrl = URL.createObjectURL(file);
+      img.onload = () => {
+        const MAX_SIDE = 1920;
+        let { width, height } = img;
+        if (width > MAX_SIDE || height > MAX_SIDE) {
+          const ratio = Math.min(MAX_SIDE / width, MAX_SIDE / height);
+          width = Math.round(width * ratio);
+          height = Math.round(height * ratio);
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          URL.revokeObjectURL(objectUrl);
+          reject(new Error("Canvas not supported"));
+          return;
+        }
+        ctx.drawImage(img, 0, 0, width, height);
+        URL.revokeObjectURL(objectUrl);
+        resolve(canvas.toDataURL("image/jpeg", 0.85));
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(objectUrl);
+        reject(new Error("Failed to load image"));
+      };
+      img.src = objectUrl;
+    });
+  }
+
+  async function handleDashboardImageSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      setDashboardSubmitError("Please select a valid image file (PNG, JPG, WEBP, etc.).");
+      return;
+    }
+    if (file.size > 30 * 1024 * 1024) {
+      // 30 MB raw → after 85% JPEG compression the base64 will be well under the
+      // 20 MB base64 limit enforced by the backend.
+      setDashboardSubmitError("Image file too large (max 30 MB).");
+      return;
+    }
+    setDashboardSubmitError(null);
+    setDashboardImageName(file.name);
+    try {
+      const dataUrl = await compressDashboardImage(file);
+      setDashboardImage(dataUrl);
+    } catch {
+      setDashboardSubmitError("Could not process image. Please try a different file.");
+    }
+  }
+
   async function handleDashboardFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
     setDashboardFile(file);
-    setDashboardExtracted(null);
-    setDashboardExtractionError(null);
-    setDashboardAnalysisResult(null);
+    setDashboardReportData(null);
+    setDashboardSubmitError(null);
+    setDashboardMessages([]);
   }
 
-  async function handleDashboardExtract() {
-    if (!dashboardFile || dashboardExtracting) return;
-    setDashboardExtracting(true);
-    setDashboardExtractionError(null);
-    setDashboardExtracted(null);
+  async function handleDashboardSubmit() {
+    if ((!dashboardFile && !dashboardImage) || dashboardSubmitting) return;
+    setDashboardSubmitting(true);
+    setDashboardSubmitError(null);
     try {
-      const formData = new FormData();
-      formData.append("file", dashboardFile);
-      console.log(`[DASHBOARD] Extracting ${dashboardFile.name}...`);
-      const res = await fetch("/api/extract-pbip", { method: "POST", body: formData });
-      console.log(`[DASHBOARD] Response status: ${res.status}`);
-      const payload = await parseApiResponse(res);
-      if (!res.ok) throw new Error(String(payload?.error ?? "Extraction failed."));
-      console.log(`[DASHBOARD] Extraction successful:`, payload);
-      const reportData = (payload as { reportData?: { report?: unknown; model?: unknown; metadata?: unknown } })?.reportData;
-      if (reportData) {
-        setDashboardExtracted(reportData);
+      if (dashboardFile) {
+        const formData = new FormData();
+        formData.append("file", dashboardFile);
+        const res = await fetch("/api/extract-pbip", { method: "POST", body: formData });
+        const payload = await parseApiResponse(res);
+        if (!res.ok) throw new Error(String(payload?.error ?? "Extraction failed."));
+        const reportData = (payload as { reportData?: { report?: unknown; model?: unknown; metadata?: unknown } })?.reportData;
+        if (!reportData) throw new Error("No report data could be extracted from this file.");
+        setDashboardReportData(reportData);
       } else {
-        throw new Error("No reportData in response");
+        // Image-only mode: skip extraction and go straight to the chat phase.
+        // Setting a non-null empty object signals "ready" to the UI conditional
+        // (`dashboardReportData ? <chat> : <upload>`), distinguishing it from
+        // `null` which means "not yet submitted".
+        setDashboardReportData({});
       }
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : "Extraction failed.";
-      console.error(`[DASHBOARD] Extraction error:`, errorMsg);
-      setDashboardExtractionError(errorMsg);
+      setDashboardSubmitError(err instanceof Error ? err.message : "Processing failed.");
     } finally {
-      setDashboardExtracting(false);
+      setDashboardSubmitting(false);
     }
   }
 
-  async function handleDashboardAnalyze() {
-    if (!dashboardExtracted || !dashboardQuestion.trim() || dashboardAnalyzing) return;
-    setDashboardAnalyzing(true);
-    setDashboardAnalysisResult(null);
+  async function handleDashboardChatSend(e?: React.FormEvent) {
+    if (e) e.preventDefault();
+    const question = dashboardChatInput.trim();
+    if (!question || !dashboardReportData || dashboardChatLoading) return;
+
+    const newUserMsg = { role: "user" as const, content: question };
+
+    // Build the message list to send BEFORE updating state so React's async
+    // batching doesn't cause us to capture a stale snapshot.
+    const historyToSend: { role: "user" | "assistant"; content: string }[] = [
+      ...dashboardMessages,
+      newUserMsg,
+    ];
+
+    function updateLastMessage(content: string) {
+      setDashboardMessages((prev) => {
+        const updated = [...prev];
+        updated[updated.length - 1] = { role: "assistant" as const, content };
+        return updated;
+      });
+    }
+
+    setDashboardChatInput("");
+    setDashboardMessages((prev) => [...prev, newUserMsg]);
+    setDashboardChatLoading(true);
+    setDashboardMessages((prev) => [...prev, { role: "assistant" as const, content: "" }]);
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          messages: [{ role: "user", content: dashboardQuestion }],
+          messages: historyToSend,
           mode: "dashboard-analysis",
-          reportData: dashboardExtracted,
+          reportData: dashboardReportData,
+          ...(dashboardImage ? { dashboardImage } : {}),
         }),
       });
-      
       if (!res.ok) {
         const errorText = await res.text();
         throw new Error(`Analysis failed (${res.status}): ${errorText}`);
       }
-
-      // The /api/chat endpoint returns a Vercel AI SDK stream via toUIMessageStreamResponse()
-      // This is a server-sent events stream with specific formatting
       const reader = res.body?.getReader();
       if (!reader) throw new Error("No response body");
-
       const decoder = new TextDecoder();
       let result = "";
-
       try {
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
-          
           const chunk = decoder.decode(value, { stream: true });
-          const lines = chunk.split("\n");
-          
-          for (const line of lines) {
+          for (const line of chunk.split("\n")) {
             const trimmed = line.trim();
-            if (!trimmed) continue;
-            
-            // Parse server-sent events format
-            if (trimmed.startsWith("data:")) {
-              try {
-                const json = JSON.parse(trimmed.slice(5).trim());
-                
-                // Handle different event types from Vercel AI SDK
-                if (json.type === "text" && json.text) {
-                  result += json.text;
-                } else if (json.type === "text-delta" && json.delta) {
-                  result += json.delta;
-                } else if (json.type === "message-delta" && json.delta?.content) {
-                  result += json.delta.content;
-                } else if (json.text) {
-                  // Fallback: if there's a text field at root level
-                  result += json.text;
-                }
-              } catch (e) {
-                // Not JSON, continue
+            if (!trimmed || !trimmed.startsWith("data:")) continue;
+            try {
+              const json = JSON.parse(trimmed.slice(5).trim());
+              let delta = "";
+              if (json.type === "text" && json.text) delta = json.text;
+              else if (json.type === "text-delta" && json.delta) delta = json.delta;
+              else if (json.type === "message-delta" && json.delta?.content) delta = json.delta.content;
+              else if (json.text) delta = json.text;
+              if (delta) {
+                result += delta;
+                updateLastMessage(result);
               }
+            } catch {
+              // skip non-JSON lines
             }
           }
         }
       } finally {
         reader.cancel();
       }
-
       if (!result.trim()) {
-        console.warn(`[DASHBOARD] Stream ended with no text extracted`);
-        setDashboardAnalysisResult("No response from analysis (empty stream)");
-      } else {
-        setDashboardAnalysisResult(result);
+        updateLastMessage("No response received. Please try again.");
       }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : "Analysis failed.";
-      console.error(`[DASHBOARD] Analysis error:`, errorMsg);
-      setDashboardAnalysisResult(`Error: ${errorMsg}`);
+      updateLastMessage(`Error: ${errorMsg}`);
     } finally {
-      setDashboardAnalyzing(false);
+      setDashboardChatLoading(false);
     }
+  }
+
+  function resetDashboardSession() {
+    setDashboardFile(null);
+    setDashboardReportData(null);
+    setDashboardSubmitError(null);
+    setDashboardMessages([]);
+    setDashboardChatInput("");
+    setDashboardImage(null);
+    setDashboardImageName(null);
+    if (dashboardFileInputRef.current) dashboardFileInputRef.current.value = "";
+    if (dashboardImageInputRef.current) dashboardImageInputRef.current.value = "";
   }
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  useEffect(() => {
+    dashboardChatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [dashboardMessages]);
 
   useEffect(() => {
     refreshDocuments().catch(() => setDocsNotice("Unable to load document inventory."));
@@ -801,92 +879,205 @@ export default function HorizonBotPage() {
             </div>
           </section>
         ) : mode === "dashboard-test" ? (
-          <section className="dashboard-test-section">
-            <div className="dashboard-test-container">
-              <div className="dashboard-test-header">
-                <div>
-                  <h1 className="dashboard-test-title">Power BI Dashboard Test</h1>
-                  <p className="dashboard-test-subtitle">
-                    Upload a .pbip file and test dashboard analysis
-                  </p>
+          dashboardReportData ? (
+            /* ── Phase 2: Chat interface ─────────────────────────────── */
+            <section className="dashboard-chat-section">
+              <div className="dashboard-chat-topbar">
+                <div className="dashboard-file-badge">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <rect x="3" y="3" width="18" height="18" rx="2"/>
+                    <path d="M3 9h18M9 21V9"/>
+                  </svg>
+                  <span>{dashboardImageName ?? dashboardFile?.name ?? "Dashboard"}</span>
+                </div>
+                <button type="button" className="btn-secondary dashboard-change-btn" onClick={resetDashboardSession}>
+                  Change File
+                </button>
+              </div>
+
+              <div className="messages-wrapper">
+                <div className="messages-container">
+                  {dashboardMessages.length === 0 && (
+                    <div className="empty-state">
+                      <div className="empty-icon">
+                        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                          <rect x="3" y="3" width="18" height="18" rx="2"/>
+                          <path d="M3 9h18M9 21V9"/>
+                        </svg>
+                      </div>
+                      <h1 className="empty-title">Dashboard Loaded</h1>
+                      <p className="empty-body">
+                        Ask me anything about this dashboard — why the graphs look the way they do, key insights, trends, a full summary, or any other question. I can read the screenshot visually and cross-reference your database records.
+                      </p>
+                    </div>
+                  )}
+
+                  {dashboardMessages.map((msg, idx) => (
+                    <div key={idx} className={`message ${msg.role}`}>
+                      <div className="message-avatar">
+                        {msg.role === "user" ? (
+                          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+                            <circle cx="12" cy="7" r="4"/>
+                          </svg>
+                        ) : (
+                          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+                            <path d="M2 17l10 5 10-5"/>
+                            <path d="M2 12l10 5 10-5"/>
+                          </svg>
+                        )}
+                      </div>
+                      <div className="message-content">
+                        {msg.content ? (
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                        ) : (
+                          <div className="typing-indicator"><span /><span /><span /></div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+
+                  <div ref={dashboardChatEndRef} />
                 </div>
               </div>
 
-              <div className="dashboard-test-upload">
-                <input
-                  ref={dashboardFileInputRef}
-                  type="file"
-                  accept=".pbip,.pbix"
-                  className="file-input"
-                  onChange={handleDashboardFileSelect}
-                />
-                <div className="dashboard-test-actions">
-                  <button
-                    type="button"
-                    className="btn-primary"
-                    onClick={() => dashboardFileInputRef.current?.click()}
-                  >
-                    {dashboardFile ? `Change File (${dashboardFile.name})` : "Select .pbip or .pbix File"}
-                  </button>
-                  <button
-                    type="button"
-                    className="btn-secondary"
-                    onClick={handleDashboardExtract}
-                    disabled={!dashboardFile || dashboardExtracting}
-                  >
-                    {dashboardExtracting ? "Extracting..." : "Extract"}
-                  </button>
-                </div>
-              </div>
-
-              {dashboardExtractionError && (
-                <div className="error-banner" style={{ marginTop: "1rem" }}>
-                  ⚠ {dashboardExtractionError}
-                </div>
-              )}
-
-              {dashboardExtracted && (
-                <div className="dashboard-test-extracted">
-                  <h2>Extracted Data</h2>
-                  <div className="dashboard-test-preview">
-                    <pre>{JSON.stringify(dashboardExtracted, null, 2)}</pre>
-                  </div>
-
-                  <div className="dashboard-test-analyze">
-                    <h3>Ask About Dashboard</h3>
+              <div className="input-wrapper">
+                <div className="input-container">
+                  <form className="input-form" onSubmit={handleDashboardChatSend}>
                     <input
-                      type="text"
-                      className="dashboard-test-input"
-                      value={dashboardQuestion}
-                      onChange={(e) => setDashboardQuestion(e.target.value)}
-                      placeholder="e.g., Why are these metrics the way they are?"
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" && !dashboardAnalyzing) {
-                          handleDashboardAnalyze();
-                        }
-                      }}
+                      className="chat-input"
+                      value={dashboardChatInput}
+                      onChange={(e) => setDashboardChatInput(e.target.value)}
+                      placeholder="Ask about this dashboard…"
+                      disabled={dashboardChatLoading}
                     />
                     <button
-                      type="button"
-                      className="btn-primary"
-                      onClick={handleDashboardAnalyze}
-                      disabled={!dashboardQuestion.trim() || dashboardAnalyzing}
+                      type="submit"
+                      className="send-btn"
+                      disabled={dashboardChatLoading || !dashboardChatInput.trim()}
                     >
-                      {dashboardAnalyzing ? "Analyzing..." : "Analyze"}
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <line x1="22" y1="2" x2="11" y2="13"/>
+                        <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+                      </svg>
                     </button>
-                  </div>
+                  </form>
+                </div>
+              </div>
+            </section>
+          ) : (
+            /* ── Phase 1: Upload ─────────────────────────────────────── */
+            <section className="dashboard-upload-section">
+              <div className="dashboard-upload-card">
+                <div className="dashboard-upload-icon">
+                  <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                    <rect x="3" y="3" width="18" height="18" rx="2"/>
+                    <path d="M3 9h18M9 21V9"/>
+                  </svg>
+                </div>
+                <h1 className="dashboard-upload-title">Dashboard Analyzer</h1>
+                <p className="dashboard-upload-subtitle">
+                  Upload a screenshot of your dashboard. The AI will read the charts visually and cross-reference your Supabase data to answer any question.
+                </p>
 
-                  {dashboardAnalysisResult && (
-                    <div className="dashboard-test-result">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                        {dashboardAnalysisResult}
-                      </ReactMarkdown>
+                {/* ── Screenshot upload (primary) ─────────────────────── */}
+                <p style={{ alignSelf: "flex-start", fontSize: "0.8rem", color: "var(--text-secondary)", marginBottom: "0.35rem" }}>
+                  Dashboard screenshot <span style={{ color: "var(--accent)" }}>*</span>
+                </p>
+                <div
+                  className="dashboard-dropzone"
+                  onClick={() => dashboardImageInputRef.current?.click()}
+                >
+                  <input
+                    ref={dashboardImageInputRef}
+                    type="file"
+                    accept="image/png,image/jpeg,image/jpg,image/webp,image/gif"
+                    style={{ display: "none" }}
+                    onChange={handleDashboardImageSelect}
+                  />
+                  {dashboardImage ? (
+                    <div className="dashboard-dropzone-selected">
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <rect x="3" y="3" width="18" height="18" rx="2"/>
+                        <circle cx="8.5" cy="8.5" r="1.5"/>
+                        <polyline points="21 15 16 10 5 21"/>
+                      </svg>
+                      <span>{dashboardImageName}</span>
+                      <span className="dashboard-dropzone-size">ready</span>
+                    </div>
+                  ) : (
+                    <div className="dashboard-dropzone-empty">
+                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                        <polyline points="17 8 12 3 7 8"/>
+                        <line x1="12" y1="3" x2="12" y2="15"/>
+                      </svg>
+                      <span>Click to upload a screenshot (PNG, JPG, WEBP)</span>
                     </div>
                   )}
                 </div>
-              )}
-            </div>
-          </section>
+
+                {/* ── PBI file upload (optional) ──────────────────────── */}
+                <p style={{ alignSelf: "flex-start", fontSize: "0.8rem", color: "var(--text-secondary)", marginBottom: "0.35rem", marginTop: "0.75rem" }}>
+                  Power BI file <span style={{ color: "var(--text-secondary)" }}>(optional — adds structural metadata)</span>
+                </p>
+                <div
+                  className="dashboard-dropzone"
+                  onClick={() => dashboardFileInputRef.current?.click()}
+                >
+                  <input
+                    ref={dashboardFileInputRef}
+                    type="file"
+                    accept=".pbip,.pbix"
+                    style={{ display: "none" }}
+                    onChange={handleDashboardFileSelect}
+                  />
+                  {dashboardFile ? (
+                    <div className="dashboard-dropzone-selected">
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <rect x="3" y="3" width="18" height="18" rx="2"/>
+                        <path d="M3 9h18M9 21V9"/>
+                      </svg>
+                      <span>{dashboardFile.name}</span>
+                      <span className="dashboard-dropzone-size">
+                        {(dashboardFile.size / 1024 / 1024).toFixed(1)} MB
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="dashboard-dropzone-empty">
+                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                        <polyline points="17 8 12 3 7 8"/>
+                        <line x1="12" y1="3" x2="12" y2="15"/>
+                      </svg>
+                      <span>Click to select a .pbip or .pbix file</span>
+                    </div>
+                  )}
+                </div>
+
+                {dashboardSubmitError && (
+                  <div className="error-banner">{dashboardSubmitError}</div>
+                )}
+
+                <button
+                  type="button"
+                  className="btn-primary dashboard-submit-btn"
+                  onClick={handleDashboardSubmit}
+                  disabled={(!dashboardFile && !dashboardImage) || dashboardSubmitting}
+                >
+                  {dashboardSubmitting ? (
+                    <>
+                      <span className="dashboard-submit-loading">
+                        <span /><span /><span />
+                      </span>
+                      <span>Processing…</span>
+                    </>
+                  ) : "Start Analysis"}
+                </button>
+              </div>
+            </section>
+          )
         ) : (
           <section className="chat-section">
             <div className="messages-wrapper">
@@ -2029,124 +2220,153 @@ export default function HorizonBotPage() {
           color: var(--text-tertiary);
         }
 
-        /* Dashboard Test Section */
-        .dashboard-test-section {
+        /* Dashboard Test – Upload Phase */
+        .dashboard-upload-section {
           flex: 1;
-          overflow: hidden;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 2rem 1rem;
+          overflow-y: auto;
         }
 
-        .dashboard-test-container {
-          height: 100%;
+        .dashboard-upload-card {
+          width: 100%;
+          max-width: 520px;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 1.5rem;
+          text-align: center;
+        }
+
+        .dashboard-upload-icon {
+          color: var(--accent);
+          opacity: 0.7;
+        }
+
+        .dashboard-upload-title {
+          font-size: 1.75rem;
+          font-weight: 700;
+          color: var(--text-primary);
+        }
+
+        .dashboard-upload-subtitle {
+          font-size: 0.95rem;
+          color: var(--text-secondary);
+          line-height: 1.6;
+          max-width: 420px;
+        }
+
+        .dashboard-dropzone {
+          width: 100%;
+          background: var(--surface);
+          border: 2px dashed var(--border);
+          border-radius: 12px;
+          padding: 2rem 1.5rem;
+          cursor: pointer;
+          transition: border-color 0.2s, background 0.2s;
+        }
+
+        .dashboard-dropzone:hover {
+          border-color: var(--accent);
+          background: rgba(79, 140, 255, 0.04);
+        }
+
+        .dashboard-dropzone-empty {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 0.75rem;
+          color: var(--text-secondary);
+          font-size: 0.9rem;
+        }
+
+        .dashboard-dropzone-selected {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 0.75rem;
+          color: var(--text-primary);
+          font-size: 0.9rem;
+          font-weight: 500;
+        }
+
+        .dashboard-dropzone-size {
+          font-size: 0.8rem;
+          color: var(--text-tertiary);
+        }
+
+        .dashboard-submit-btn {
+          width: 100%;
+          padding: 0.875rem;
+          font-size: 0.95rem;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 0.5rem;
+        }
+
+        .dashboard-submit-loading {
+          display: inline-flex;
+          gap: 3px;
+          align-items: center;
+        }
+
+        .dashboard-submit-loading span {
+          width: 5px;
+          height: 5px;
+          background: white;
+          border-radius: 50%;
+          animation: bounce 1.4s infinite;
+        }
+
+        .dashboard-submit-loading span:nth-child(2) {
+          animation-delay: 0.2s;
+        }
+
+        .dashboard-submit-loading span:nth-child(3) {
+          animation-delay: 0.4s;
+        }
+
+        /* Dashboard Test – Chat Phase */
+        .dashboard-chat-section {
+          flex: 1;
           display: flex;
           flex-direction: column;
           overflow: hidden;
         }
 
-        .dashboard-test-header {
-          padding: 2rem 1rem;
+        .dashboard-chat-topbar {
+          padding: 0.75rem 1.5rem;
           border-bottom: 1px solid var(--border);
-        }
-
-        .dashboard-test-title {
-          font-size: 1.75rem;
-          font-weight: 700;
-          color: var(--text-primary);
-          margin-bottom: 0.5rem;
-        }
-
-        .dashboard-test-subtitle {
-          font-size: 0.95rem;
-          color: var(--text-secondary);
-        }
-
-        .dashboard-test-upload {
-          padding: 2rem 1rem;
-          border-bottom: 1px solid var(--border);
-        }
-
-        .dashboard-test-actions {
           display: flex;
-          gap: 0.75rem;
-          margin-top: 1rem;
+          align-items: center;
+          justify-content: space-between;
+          gap: 1rem;
+          flex-shrink: 0;
         }
 
-        .dashboard-test-extracted {
-          flex: 1;
-          overflow-y: auto;
-          padding: 1.5rem;
-        }
-
-        .dashboard-test-extracted h2 {
-          font-size: 1.1rem;
-          font-weight: 600;
-          color: var(--text-primary);
-          margin-bottom: 1rem;
-        }
-
-        .dashboard-test-extracted h3 {
-          font-size: 0.95rem;
-          font-weight: 600;
-          color: var(--text-primary);
-          margin-top: 1.5rem;
-          margin-bottom: 0.75rem;
-        }
-
-        .dashboard-test-preview {
-          background: var(--surface);
-          border: 1px solid var(--border);
-          border-radius: 8px;
-          padding: 1rem;
-          overflow-x: auto;
-          margin-bottom: 1.5rem;
-          max-height: 200px;
-          overflow-y: auto;
-        }
-
-        .dashboard-test-preview pre {
-          font-size: 0.75rem;
-          color: var(--text-secondary);
-          line-height: 1.5;
-          white-space: pre-wrap;
-          word-break: break-word;
-        }
-
-        .dashboard-test-analyze {
+        .dashboard-file-badge {
           display: flex;
-          gap: 0.75rem;
-          align-items: flex-end;
-          margin-bottom: 1.5rem;
+          align-items: center;
+          gap: 0.5rem;
+          font-size: 0.875rem;
+          color: var(--text-secondary);
+          font-weight: 500;
+          min-width: 0;
         }
 
-        .dashboard-test-input {
-          flex: 1;
-          background: var(--surface);
-          border: 1px solid var(--border);
-          border-radius: 8px;
-          padding: 0.75rem 1rem;
-          color: var(--text-primary);
-          font-size: 0.9rem;
-          font-family: inherit;
+        .dashboard-file-badge span {
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
         }
 
-        .dashboard-test-input::placeholder {
-          color: var(--text-tertiary);
-        }
-
-        .dashboard-test-result {
-          background: var(--surface);
-          border: 1px solid var(--border);
-          border-radius: 8px;
-          padding: 1.25rem;
-        }
-
-        .dashboard-test-result h3 {
-          margin: 0 0 1rem 0;
-        }
-
-        .dashboard-test-result-content {
-          color: var(--text-primary);
-          line-height: 1.6;
-          font-size: 0.95rem;
+        .dashboard-change-btn {
+          flex-shrink: 0;
+          padding: 0.5rem 1rem;
+          font-size: 0.8rem;
         }
 
         /* Responsive */
@@ -2188,13 +2408,12 @@ export default function HorizonBotPage() {
             grid-template-columns: 1fr;
           }
 
-          .dashboard-test-analyze {
-            flex-direction: column;
-            align-items: stretch;
+          .dashboard-upload-card {
+            padding: 0 0.5rem;
           }
 
-          .dashboard-test-actions {
-            flex-direction: column;
+          .dashboard-dropzone {
+            padding: 1.5rem 1rem;
           }
         }
       `}</style>
