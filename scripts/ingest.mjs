@@ -16,6 +16,7 @@ import { createClient } from "@supabase/supabase-js";
 import OpenAI from "openai";
 import dotenv from "dotenv";
 import fs from "fs";
+import path from "path";
 import { loadDocumentsFromFolder } from "./load-docs.mjs";
 dotenv.config({ path: ".env.local" });
 
@@ -55,6 +56,45 @@ function chunkDocument(doc, maxChunkChars = 900) {
   }
   if (current.trim()) chunks.push({ content: current.trim(), metadata });
   return chunks;
+}
+
+// ─── CSV to Prose via LLM ─────────────────────────────────────────────────────
+
+async function csvToProseViaLLM(csvContent, filename) {
+  const prompt = `You are a data analyst. Convert the following CSV data into clear, descriptive paragraphs that explain what the data represents, key metrics, trends, and important insights.
+
+Focus on:
+1. What this data measures (context and purpose)
+2. Key rows/records and their significance
+3. Patterns or notable values
+4. How this relates to banking/strategy operations
+
+CSV File: ${filename}
+
+${csvContent}
+
+Provide 2-4 paragraphs of narrative explanation suitable for a bank's strategic analysis.`;
+
+  try {
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o",
+      messages: [
+        {
+          role: "user",
+          content: prompt,
+        },
+      ],
+      temperature: 0.3,
+      max_tokens: 1000,
+    });
+
+    const prose = response.choices[0].message.content || "";
+    console.log(`✨  LLM converted CSV "${filename}" to prose (${prose.length} chars)`);
+    return prose;
+  } catch (err) {
+    console.error(`⚠️  LLM conversion failed for ${filename}: ${err.message}`);
+    return null;
+  }
 }
 
 // ─── Embedding Generation ────────────────────────────────────────────────────
@@ -112,6 +152,32 @@ async function ingest() {
     process.exit(1);
   }
 
+  // ── Step 1: Pre-process CSVs with LLM ──────────────────────────────────────
+  console.log("🔄  Pre-processing CSV files with LLM...\n");
+  const csvProseMap = new Map(); // Map filename → LLM-generated prose
+  
+  for (const folderPath of folderPaths) {
+    if (!fs.existsSync(folderPath)) continue;
+    
+    const files = fs.readdirSync(folderPath);
+    for (const file of files) {
+      if (file.toLowerCase().endsWith(".csv")) {
+        const filePath = path.join(folderPath, file);
+        const csvContent = fs.readFileSync(filePath, "utf-8");
+        
+        // Only convert if not empty
+        if (csvContent.trim().length > 0) {
+          const prose = await csvToProseViaLLM(csvContent, file);
+          if (prose) {
+            csvProseMap.set(file, prose);
+          }
+        }
+      }
+    }
+  }
+  console.log("");
+
+  // ── Step 2: Load documents normally ─────────────────────────────────────────
   const documents = [];
   for (const folderPath of folderPaths) {
     if (!fs.existsSync(folderPath)) {
@@ -130,7 +196,25 @@ async function ingest() {
 
   console.log(`\n📚  Documents loaded: ${documents.length}`);
 
-  const allChunks = documents.flatMap((doc) => chunkDocument(doc));
+  // ── Step 3: Replace CSV documents with LLM-generated prose ──────────────────
+  const processedDocuments = documents.map((doc) => {
+    const source = doc.metadata.source;
+    
+    // If this document came from a CSV and we have LLM prose for it, use the prose
+    if (source && source.endsWith(".csv") && csvProseMap.has(source)) {
+      return {
+        ...doc,
+        content: csvProseMap.get(source),
+        metadata: {
+          ...doc.metadata,
+          llm_converted: true,
+        },
+      };
+    }
+    return doc;
+  });
+
+  const allChunks = processedDocuments.flatMap((doc) => chunkDocument(doc));
   console.log(`📄  Total chunks after splitting: ${allChunks.length}\n`);
 
   const totalBatches = Math.ceil(allChunks.length / BATCH_SIZE);

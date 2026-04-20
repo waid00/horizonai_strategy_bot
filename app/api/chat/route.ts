@@ -582,8 +582,11 @@ export async function POST(req: NextRequest) {
       type ImagePart = { type: "image"; image: string };
 
       if (dashboardImage) {
+        // Extract base64 from data URL: "data:image/png;base64,XXXXX" → "XXXXX"
+        const base64Data = dashboardImage.split(",")[1];
+        
         const contentParts: Array<TextPart | ImagePart> = [
-          { type: "image", image: dashboardImage },
+          { type: "image", image: base64Data },
           { type: "text", text: textContent },
         ];
         augmentedMessages = [
@@ -591,7 +594,7 @@ export async function POST(req: NextRequest) {
           { role: "user" as const, content: contentParts },
         ];
         console.log(
-          `[DASHBOARD] Image attached (${(dashboardImage.length / 1024).toFixed(0)} KB base64)`
+          `[DASHBOARD] Image attached (${(base64Data.length / 1024).toFixed(0)} KB base64)`
         );
       } else {
         augmentedMessages = [
