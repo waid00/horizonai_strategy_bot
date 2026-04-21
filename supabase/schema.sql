@@ -135,92 +135,106 @@ CREATE POLICY "data_records_service_role_delete"
   USING (true);
 
 -- ============================================================
--- 7. Gold Dimension Tables (Star Schema for Analytics)
+-- 7. Gold Financial Tables (Star Schema for Analytics)
 -- ============================================================
 
--- 7a. gold_dim_team
-CREATE TABLE IF NOT EXISTS gold_dim_team (
-  team_id   TEXT PRIMARY KEY,
-  team_name TEXT NOT NULL,
-  domain    TEXT NOT NULL
+-- 7a. gold_dim_typ (Transaction types)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS gold_dim_typ (
+  typ_key           INT PRIMARY KEY,
+  typ_nazev         TEXT NOT NULL,
+  smer              TEXT NOT NULL,
+  ovlivnuje_profit  TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS gold_dim_team_name_idx ON gold_dim_team (team_name);
+CREATE INDEX IF NOT EXISTS gold_dim_typ_nazev_idx ON gold_dim_typ (typ_nazev);
 
-ALTER TABLE gold_dim_team ENABLE ROW LEVEL SECURITY;
+ALTER TABLE gold_dim_typ ENABLE ROW LEVEL SECURITY;
 
-DROP POLICY IF EXISTS "gold_dim_team_service_role_all" ON gold_dim_team;
-CREATE POLICY "gold_dim_team_service_role_all"
-  ON gold_dim_team
+DROP POLICY IF EXISTS "gold_dim_typ_service_role_all" ON gold_dim_typ;
+CREATE POLICY "gold_dim_typ_service_role_all"
+  ON gold_dim_typ
   FOR ALL
   TO service_role
   USING (true)
   WITH CHECK (true);
 
--- 7b. gold_dim_kpi
-CREATE TABLE IF NOT EXISTS gold_dim_kpi (
-  kpi_id       TEXT PRIMARY KEY,
-  kpi_name     TEXT NOT NULL,
-  kpi_type     TEXT NOT NULL,
-  target_value NUMERIC(7, 1) NOT NULL,
-  initial_value NUMERIC(6, 1) NOT NULL,
-  unit         TEXT NOT NULL
+-- ============================================================
+-- 7f. gold_dim_polozka (Financial line items)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS gold_dim_polozka (
+  polozka_key       INT PRIMARY KEY,
+  polozka_nazev     TEXT NOT NULL,
+  kategorie         TEXT NOT NULL,
+  typ               TEXT NOT NULL,
+  smer              TEXT NOT NULL,
+  segment           TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS gold_dim_kpi_name_idx ON gold_dim_kpi (kpi_name);
+CREATE INDEX IF NOT EXISTS gold_dim_polozka_nazev_idx ON gold_dim_polozka (polozka_nazev);
+CREATE INDEX IF NOT EXISTS gold_dim_polozka_segment_idx ON gold_dim_polozka (segment);
 
-ALTER TABLE gold_dim_kpi ENABLE ROW LEVEL SECURITY;
+ALTER TABLE gold_dim_polozka ENABLE ROW LEVEL SECURITY;
 
-DROP POLICY IF EXISTS "gold_dim_kpi_service_role_all" ON gold_dim_kpi;
-CREATE POLICY "gold_dim_kpi_service_role_all"
-  ON gold_dim_kpi
+DROP POLICY IF EXISTS "gold_dim_polozka_service_role_all" ON gold_dim_polozka;
+CREATE POLICY "gold_dim_polozka_service_role_all"
+  ON gold_dim_polozka
   FOR ALL
   TO service_role
   USING (true)
   WITH CHECK (true);
 
--- 7c. gold_dim_period
-CREATE TABLE IF NOT EXISTS gold_dim_period (
-  period_id TEXT PRIMARY KEY,
-  period    TEXT NOT NULL,
-  quarter   TEXT NOT NULL,
-  year      INT NOT NULL
+-- ============================================================
+-- 7g. gold_dim_date (Date dimension)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS gold_dim_date (
+  date_key           INT PRIMARY KEY,
+  mesic_kod          TEXT NOT NULL,
+  rok                INT NOT NULL,
+  mesic_cislo        INT NOT NULL,
+  mesic_nazev        TEXT NOT NULL,
+  kvartal            TEXT NOT NULL,
+  kvartal_rok        TEXT NOT NULL,
+  pololeti           TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS gold_dim_period_year_quarter_idx ON gold_dim_period (year, quarter);
+CREATE INDEX IF NOT EXISTS gold_dim_date_rok_idx ON gold_dim_date (rok);
+CREATE INDEX IF NOT EXISTS gold_dim_date_kvartal_idx ON gold_dim_date (kvartal_rok);
 
-ALTER TABLE gold_dim_period ENABLE ROW LEVEL SECURITY;
+ALTER TABLE gold_dim_date ENABLE ROW LEVEL SECURITY;
 
-DROP POLICY IF EXISTS "gold_dim_period_service_role_all" ON gold_dim_period;
-CREATE POLICY "gold_dim_period_service_role_all"
-  ON gold_dim_period
+DROP POLICY IF EXISTS "gold_dim_date_service_role_all" ON gold_dim_date;
+CREATE POLICY "gold_dim_date_service_role_all"
+  ON gold_dim_date
   FOR ALL
   TO service_role
   USING (true)
   WITH CHECK (true);
 
--- 7d. gold_fact_kpi
-CREATE TABLE IF NOT EXISTS gold_fact_kpi (
-  period_id TEXT NOT NULL,
-  kpi_id    TEXT NOT NULL,
-  team_id   TEXT NOT NULL,
-  value     DOUBLE PRECISION NOT NULL,
-  dq_flag   TEXT NOT NULL,
-  PRIMARY KEY (period_id, kpi_id, team_id),
-  FOREIGN KEY (period_id) REFERENCES gold_dim_period (period_id),
-  FOREIGN KEY (kpi_id) REFERENCES gold_dim_kpi (kpi_id),
-  FOREIGN KEY (team_id) REFERENCES gold_dim_team (team_id)
+-- ============================================================
+-- 7h. gold_fact_financials (Core financial metrics)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS gold_fact_financials (
+  fact_key                  INT PRIMARY KEY,
+  date_key                  INT NOT NULL,
+  polozka_key               INT NOT NULL,
+  typ_key                   INT NOT NULL,
+  hodnota_mil_kc            NUMERIC(10, 3) NOT NULL,
+  profit_kontribuce_mil_kc  NUMERIC(10, 3) NOT NULL,
+  FOREIGN KEY (date_key) REFERENCES gold_dim_date (date_key),
+  FOREIGN KEY (polozka_key) REFERENCES gold_dim_polozka (polozka_key),
+  FOREIGN KEY (typ_key) REFERENCES gold_dim_typ (typ_key)
 );
 
-CREATE INDEX IF NOT EXISTS gold_fact_kpi_period_idx ON gold_fact_kpi (period_id);
-CREATE INDEX IF NOT EXISTS gold_fact_kpi_kpi_idx ON gold_fact_kpi (kpi_id);
-CREATE INDEX IF NOT EXISTS gold_fact_kpi_team_idx ON gold_fact_kpi (team_id);
+CREATE INDEX IF NOT EXISTS gold_fact_financials_date_idx ON gold_fact_financials (date_key);
+CREATE INDEX IF NOT EXISTS gold_fact_financials_polozka_idx ON gold_fact_financials (polozka_key);
+CREATE INDEX IF NOT EXISTS gold_fact_financials_typ_idx ON gold_fact_financials (typ_key);
 
-ALTER TABLE gold_fact_kpi ENABLE ROW LEVEL SECURITY;
+ALTER TABLE gold_fact_financials ENABLE ROW LEVEL SECURITY;
 
-DROP POLICY IF EXISTS "gold_fact_kpi_service_role_all" ON gold_fact_kpi;
-CREATE POLICY "gold_fact_kpi_service_role_all"
-  ON gold_fact_kpi
+DROP POLICY IF EXISTS "gold_fact_financials_service_role_all" ON gold_fact_financials;
+CREATE POLICY "gold_fact_financials_service_role_all"
+  ON gold_fact_financials
   FOR ALL
   TO service_role
   USING (true)

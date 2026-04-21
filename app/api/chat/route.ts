@@ -15,10 +15,12 @@ import { streamText } from "ai";
 import { openai } from "@ai-sdk/openai";
 import OpenAI from "openai";
 import { NextRequest } from "next/server";
+import fs from "fs";
+import path from "path";
 
 // ─── Runtime Config ──────────────────────────────────────────────────────────
-// Edge runtime for minimal cold-start latency on Vercel
-export const runtime = "edge";
+// Node.js runtime needed for file system access to load CSV fallback data
+export const runtime = "nodejs";
 
 // ─── Clients ─────────────────────────────────────────────────────────────────
 
@@ -42,6 +44,63 @@ function getOpenAI() {
     _openaiRaw = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
   }
   return _openaiRaw;
+}
+
+// ─── CSV Data Loader (fallback for financial data) ──────────────────────────────
+
+/**
+ * Parse a CSV file and return rows as objects
+ */
+function parseCSVData(filePath: string): Record<string, unknown>[] {
+  try {
+    const content = fs.readFileSync(filePath, "utf-8");
+    const lines = content.trim().split("\n");
+    if (lines.length < 2) return [];
+
+    const headers = lines[0].split(",").map((h) => h.trim());
+    const rows: Record<string, unknown>[] = [];
+
+    for (let i = 1; i < lines.length; i++) {
+      const values = lines[i].split(",").map((v) => v.trim());
+      const row: Record<string, unknown> = {};
+      headers.forEach((h, idx) => {
+        const val = values[idx];
+        // Try to parse as number, otherwise keep as string
+        row[h] = isNaN(Number(val)) ? val : (val.includes(".") ? parseFloat(val) : parseInt(val));
+      });
+      rows.push(row);
+    }
+    return rows;
+  } catch (err) {
+    console.warn(`Failed to parse CSV at ${filePath}:`, err);
+    return [];
+  }
+}
+
+/**
+ * Load financial data from CSV files (fallback when Supabase tables don't exist)
+ */
+function loadCSVDataForTable(tableName: string): Record<string, unknown>[] {
+  const dashboardFilesDir = path.join(process.cwd(), "dashboard_files");
+  
+  // Map table names to CSV files
+  const fileMap: Record<string, string> = {
+    "gold_fact_financials": "gold_fact_financials.csv",
+    "gold_dim_date":        "gold_dim_date.csv",
+    "gold_dim_polozka":     "gold_dim_polozka.csv",
+    "gold_dim_typ":         "gold_dim_typ.csv",
+  };
+
+  const fileName = fileMap[tableName];
+  if (!fileName) return [];
+
+  const filePath = path.join(dashboardFilesDir, fileName);
+  if (!fs.existsSync(filePath)) {
+    console.warn(`CSV file not found: ${filePath}`);
+    return [];
+  }
+
+  return parseCSVData(filePath);
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -87,15 +146,18 @@ interface ChatRequestBody {
 // ─── Gold Table Definitions ───────────────────────────────────────────────────
 
 /**
- * The four Supabase gold tables populated by the Databricks sync.
- * These names match DATABRICKS_TABLES entries like
- * vse_banka.strategie.gold_dim_kpi → stored in table `gold_dim_kpi`.
+ * Financial gold tables for dashboard analysis.
+ * These tables contain the financial data from CSV files:
+ * - gold_fact_financials: core financial metrics
+ * - gold_dim_date: date dimension with calendar information
+ * - gold_dim_polozka: financial line items (revenue/expense categories)
+ * - gold_dim_typ: transaction types
  */
 const GOLD_TABLES: Array<{ name: string; columns: string[] }> = [
-  { name: "gold_dim_kpi",    columns: ["kpi_id", "kpi_name", "kpi_type", "target_value", "initial_value", "unit"] },
-  { name: "gold_dim_period", columns: ["period_id", "period", "quarter", "year"] },
-  { name: "gold_dim_team",   columns: ["team_id", "team_name", "domain"] },
-  { name: "gold_fact_kpi",   columns: ["period_id", "kpi_id", "team_id", "value", "dq_flag"] },
+  { name: "gold_fact_financials", columns: ["fact_key", "date_key", "polozka_key", "typ_key", "hodnota_mil_kc", "profit_kontribuce_mil_kc"] },
+  { name: "gold_dim_date",        columns: ["date_key", "mesic_kod", "rok", "mesic_cislo", "mesic_nazev", "kvartal", "kvartal_rok", "pololeti"] },
+  { name: "gold_dim_polozka",     columns: ["polozka_key", "polozka_nazev", "kategorie", "typ", "smer", "segment"] },
+  { name: "gold_dim_typ",         columns: ["typ_key", "typ_nazev", "smer", "ovlivnuje_profit"] },
 ];
 
 // ─── Schema Fetch ─────────────────────────────────────────────────────────────
@@ -122,43 +184,57 @@ async function fetchDataSchema(): Promise<SchemaTable[]> {
 }
 
 /**
- * Fetches rows from the four gold tables and formats them as a readable
+ * Fetches rows from the gold tables and formats them as a readable
  * text block so the LLM can cross-reference chart values against actual data.
+ * Tries Supabase first, then falls back to CSV files for financial data.
  */
 async function fetchDashboardData(): Promise<string> {
   const parts: string[] = [];
 
   for (const gt of GOLD_TABLES) {
+    let rows: Record<string, unknown>[] = [];
+    let dataSource = "Supabase";
+
     try {
-      const { data, error } = await getSupabase()
-        .from(gt.name)
-        .select("*")
-        .limit(200);
+      // First try to fetch from Supabase
+      if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
+        const { data, error } = await getSupabase()
+          .from(gt.name)
+          .select("*")
+          .limit(200);
 
-      if (error) {
-        parts.push(`Table "${gt.name}": error – ${error.message}`);
-        continue;
+        if (!error && data && data.length > 0) {
+          rows = data as Record<string, unknown>[];
+        }
       }
-
-      const rows = (data ?? []) as Record<string, unknown>[];
-      if (rows.length === 0) {
-        parts.push(`Table "${gt.name}": no rows (sync may not have run yet).`);
-        continue;
-      }
-
-      const columns = Object.keys(rows[0]);
-      const preview = rows.slice(0, 50);
-      parts.push(
-        `Table "${gt.name}" (${rows.length} rows, columns: ${columns.join(", ")}):\n` +
-          JSON.stringify(preview, null, 2)
-      );
     } catch (err) {
-      parts.push(`Table "${gt.name}": fetch failed – ${String(err)}`);
+      console.warn(`Supabase fetch failed for ${gt.name}:`, err);
     }
+
+    // Fall back to CSV data for financial tables if Supabase has no data
+    if (rows.length === 0 && ["gold_fact_financials", "gold_dim_date", "gold_dim_polozka", "gold_dim_typ"].includes(gt.name)) {
+      rows = loadCSVDataForTable(gt.name);
+      if (rows.length > 0) {
+        dataSource = "CSV";
+      }
+    }
+
+    // Format the output
+    if (rows.length === 0) {
+      parts.push(`Table "${gt.name}": no data available.`);
+      continue;
+    }
+
+    const columns = Object.keys(rows[0]);
+    const preview = rows.slice(0, 50);
+    parts.push(
+      `Table "${gt.name}" (${rows.length} rows from ${dataSource}, columns: ${columns.join(", ")}):\n` +
+        JSON.stringify(preview, null, 2)
+    );
   }
 
   if (parts.length === 0) {
-    return "No gold tables found. Run the Databricks sync first.";
+    return "No gold tables found. Run the Databricks sync first or upload financial CSV files.";
   }
 
   const result = parts.join("\n\n---\n\n");
@@ -381,13 +457,13 @@ The dashboard block MUST use this exact format (no extra whitespace inside the t
 <dashboard>[{"title":"Chart Title","type":"bar","sql":"SELECT ..."},{"title":"Chart 2","type":"line","sql":"SELECT ..."}]</dashboard>
 Rules for the SQL inside the block:
 - Each SQL must be a single SELECT statement.
-- Queries MUST use one of the gold tables: gold_dim_kpi, gold_dim_period, gold_dim_team, gold_fact_kpi.
+- Queries MUST use one of the gold financial tables: gold_fact_financials, gold_dim_date, gold_dim_polozka, gold_dim_typ.
 - Simple examples:
-    SELECT kpi_name, target_value FROM gold_dim_kpi LIMIT 50
-    SELECT period, year FROM gold_dim_period LIMIT 50
-    SELECT team_name, domain FROM gold_dim_team LIMIT 50
+    SELECT typ_nazev, COUNT(*) FROM gold_dim_typ GROUP BY typ_nazev LIMIT 50
+    SELECT mesic_nazev, kvartal FROM gold_dim_date LIMIT 50
+    SELECT polozka_nazev, segment FROM gold_dim_polozka LIMIT 50
 - For fact data with dimension labels, use JOINs:
-    SELECT k.kpi_name, p.period, f.value FROM gold_fact_kpi f JOIN gold_dim_kpi k ON f.kpi_id = k.kpi_id JOIN gold_dim_period p ON f.period_id = p.period_id LIMIT 50
+    SELECT d.mesic_nazev, p.polozka_nazev, f.hodnota_mil_kc FROM gold_fact_financials f JOIN gold_dim_date d ON f.date_key = d.date_key JOIN gold_dim_polozka p ON f.polozka_key = p.polozka_key LIMIT 50
 - Supported chart types: bar, line, pie, table
 - Maximum 6 charts per dashboard.
 - Do NOT include semicolons.`;
